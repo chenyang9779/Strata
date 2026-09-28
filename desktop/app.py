@@ -868,7 +868,8 @@ class Desktop(tk.Tk):
                 self.proc = None
 
     def _log(self, line):
-        safe = runtime.redact(str(line), (self.api_key.get(),))
+        safe = runtime.redact(str(line), (self.api_key.get(),
+                                           (self.active_config or {}).get("api_key", "")))
         tag = ("log_error" if "error" in safe.lower() or "[X]" in safe or "traceback" in safe.lower()
                else "log_ready" if "ready:" in safe or "[ok]" in safe else "")
         self.log_text.insert("end", safe + "\n", tag)
@@ -963,7 +964,8 @@ class Desktop(tk.Tk):
                     else:
                         if self.chat_history and self.chat_history[-1]["role"] == "user":
                             self.chat_history.pop()
-                        self._chat_text("\n\n" + runtime.redact(detail, (self.api_key.get(),)) + "\n\n",
+                        self._chat_text("\n\n" + runtime.redact(
+                            detail, (self.api_key.get(), (self.active_config or {}).get("api_key", ""))) + "\n\n",
                                         "error")
                         self.chat_status.set("Request failed · see the error above")
                     self._set_busy(self.machine.busy)
@@ -1117,6 +1119,7 @@ class Desktop(tk.Tk):
         try:
             result = self._api_request(core.local_url(config) + "/metrics",
                                        api_key=config.get("api_key", ""))
+            runtime.metrics_summary(result)
             self.events.put(("metrics", token, result, None))
         except Exception as exc:
             self.events.put(("metrics", token, None, str(runtime.api_error(exc))))
