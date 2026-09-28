@@ -117,6 +117,8 @@ class Desktop(tk.Tk):
         self.monitor_toks = tk.StringVar(value="0.0")
         self.monitor_requests = tk.StringVar(value="0")
         self.endpoint = tk.StringVar(value="http://127.0.0.1:8080/v1")
+        self.lan_endpoint = tk.StringVar(value="Enable LAN serving to show network addresses")
+        self.local_ips = core.lan_addresses()
         self._theme()
         self._layout()
         self.family.trace_add("write", self._family_changed)
@@ -237,6 +239,7 @@ class Desktop(tk.Tk):
         self.page_host = tk.Frame(work, bg=BG)
         self.page_host.pack(fill="both", expand=True)
         self.pages = []
+        self.scroll_canvases = {}
         for i in range(6):
             page = tk.Frame(self.page_host, bg=BG)
             self.pages.append(page)
@@ -262,6 +265,7 @@ class Desktop(tk.Tk):
         tk.Label(footer, text="1 GENERATION  •  QUEUED REQUESTS", bg=BG, fg=MUTED,
                  font=("Segoe UI Semibold", 8)).pack(side="right")
         self._page_index = 0
+        self.bind_all("<MouseWheel>", self._wheel_page, add="+")
         self._show_page(0)
         self._set_busy(False)
 
@@ -275,12 +279,25 @@ class Desktop(tk.Tk):
         item = canvas.create_window((0, 0), anchor="nw", window=inner)
         inner.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.bind("<Configure>", lambda e: canvas.itemconfigure(item, width=e.width))
-        def wheel(event):
-            if self._page_index < 3:
-                canvas.yview_scroll(-int(event.delta / 120), "units")
-        canvas.bind("<MouseWheel>", wheel)
-        inner.bind("<MouseWheel>", wheel)
+        self.scroll_canvases[page] = canvas
         return inner
+
+    def _wheel_page(self, event):
+        if self._page_index >= 3:
+            return
+        page = self.pages[self._page_index]
+        target = self.winfo_containing(event.x_root, event.y_root)
+        if not target:
+            return
+        path = str(target)
+        parent_path = str(page)
+        if path != parent_path and not path.startswith(parent_path + "."):
+            return
+        if isinstance(target, (tk.Text, ttk.Treeview, ttk.Combobox)):
+            return
+        step = max(1, int(abs(event.delta) / 120))
+        self.scroll_canvases[page].yview_scroll(-step if event.delta > 0 else step, "units")
+        return "break"
 
     def _show_page(self, index):
         headings = [
@@ -407,6 +424,14 @@ class Desktop(tk.Tk):
         self.save_api_button = ttk.Button(tools, text="Save API settings to selected model",
                                            command=self.save_selected)
         self.save_api_button.grid(row=3, column=1, sticky="e", pady=10)
+        ttk.Label(tools, text="LAN OpenAI API:", style="Panel.TLabel").grid(
+            row=4, column=0, sticky="w", pady=9)
+        ttk.Label(tools, textvariable=self.lan_endpoint, style="Hint.TLabel",
+                  wraplength=530).grid(row=4, column=1, sticky="w")
+        ttk.Button(tools, text="Copy LAN URL", command=self.copy_lan_url).grid(
+            row=4, column=2, padx=(8, 0))
+        ttk.Button(tools, text="Refresh network addresses", command=self.refresh_lan_addresses).grid(
+            row=5, column=1, sticky="w", pady=(5, 0))
 
     def _chat_tab(self, parent):
         header = tk.Frame(parent, bg=BG)
@@ -553,6 +578,9 @@ class Desktop(tk.Tk):
                          self.cpu_workers, self.vision_threads, self.expert_cache,
                          self.prefill, self.fit_max_tokens):
             variable.trace_add("write", self._mark_dirty)
+        for variable in (self.host, self.port, self.api_key):
+            variable.trace_add("write", self._refresh_api_urls)
+        self._refresh_api_urls()
 
     def _mark_dirty(self, *_):
         if not self._loading_form and self.selected_path is not None:
@@ -638,12 +666,46 @@ class Desktop(tk.Tk):
             self.prefill.set(core.flag_value(args, "--prefill", "auto"))
             self.fit_max_tokens.set(bool(cfg.get("fit_max_tokens", False)))
             self.endpoint.set(core.local_url(cfg) + "/v1")
+            self._refresh_api_urls()
             self.dirty = False
             self.dirty_label.configure(text="")
         finally:
             self._loading_form = False
         self._save_prefs()
         self.current_activity.set("Selected " + str(cfg["model_name"]))
+
+    def _refresh_api_urls(self, *_):
+        if self.host.get() != "0.0.0.0":
+            self.lan_endpoint.set("LAN access off · bind to 0.0.0.0 to enable")
+            self.available_lan_urls = []
+            return
+        if not self.api_key.get().strip():
+            self.lan_endpoint.set("Generate an API key before enabling LAN access")
+            self.available_lan_urls = []
+            return
+        try:
+            port = int(self.port.get())
+            if not 1 <= port <= 65535:
+                raise ValueError
+            self.available_lan_urls = core.lan_urls(
+                {"host": "0.0.0.0", "port": port}, self.local_ips)
+            self.lan_endpoint.set(", ".join(self.available_lan_urls) if self.available_lan_urls else
+                                  "No LAN IPv4 address found · check Windows network settings")
+        except (TypeError, ValueError):
+            self.available_lan_urls = []
+            self.lan_endpoint.set("Enter a valid port to show LAN addresses")
+
+    def refresh_lan_addresses(self):
+        self.local_ips = core.lan_addresses()
+        self._refresh_api_urls()
+
+    def copy_lan_url(self):
+        if not getattr(self, "available_lan_urls", []):
+            messagebox.showinfo("No LAN URL", "Configure a LAN bind address, port and API key first.")
+            return
+        self.clipboard_clear()
+        self.clipboard_append(self.available_lan_urls[0])
+        self.current_activity.set("LAN API URL copied")
 
     def _runtime_values(self):
         return dict(host=self.host.get(), port=self.port.get(), api_key=self.api_key.get(),
