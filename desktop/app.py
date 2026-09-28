@@ -16,15 +16,21 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 import strata_desktop_core as core
+import runtime
 
 
-BG = "#101827"
-PANEL = "#192536"
-FIELD = "#223149"
-TEXT = "#eef3fa"
-MUTED = "#a9bbd1"
-ACCENT = "#51b9d6"
-LOG_BG = "#0c1420"
+BG = "#0b1220"
+NAV = "#0f1b2c"
+PANEL = "#15243a"
+FIELD = "#1e314c"
+BORDER = "#304660"
+TEXT = "#eef6fc"
+MUTED = "#a8bdd0"
+ACCENT = "#66dec9"
+PURPLE = "#a1aeff"
+SUCCESS = "#7fe2a6"
+WARNING = "#ffcc85"
+LOG_BG = "#0a1524"
 
 
 def locate_root(saved: str) -> Path | None:
@@ -43,14 +49,16 @@ def locate_root(saved: str) -> Path | None:
 class Desktop(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Strata Desktop")
-        self.geometry("1100x820")
-        self.minsize(875, 680)
+        self.title("Strata  |  Control Center")
+        self.geometry("1240x850")
+        self.minsize(990, 685)
         self.configure(background=BG)
         self.protocol("WM_DELETE_WINDOW", self.close_app)
         self.events = queue.Queue()
         self.proc = None
         self.operation = ""
+        self.machine = runtime.RunState()
+        self.stop_requested = threading.Event()
         self.pending_config = None
         self.pending_runtime = None
         self.model_files = {}
@@ -59,6 +67,14 @@ class Desktop(tk.Tk):
         self.chat_history = []
         self.chat_busy = False
         self.metrics_busy = False
+        self.chat_request_id = 0
+        self.chat_cancel = threading.Event()
+        self.chat_response = None
+        self.chat_response_lock = threading.Lock()
+        self.partial_answer = ""
+        self.active_config = None
+        self._loading_form = False
+        self.dirty = False
         self.prefs_path = core.user_dir() / "desktop.json"
         self.prefs = core.read_json(self.prefs_path)
         self.root_dir = locate_root(str(self.prefs.get("root", "")))
@@ -92,12 +108,19 @@ class Desktop(tk.Tk):
         self.prefill = tk.StringVar(value="auto")
         self.fit_max_tokens = tk.BooleanVar(value=False)
         self.mcp_file = tk.StringVar(value=str(self.prefs.get("mcp_file", "")))
-        self.status = tk.StringVar(value="Stopped")
+        self.status = tk.StringVar(value="OFFLINE")
+        self.current_activity = tk.StringVar(value="Ready to launch a model")
+        self.active_model_text = tk.StringVar(value="No active model")
+        self.monitor_state = tk.StringVar(value="OFFLINE")
+        self.monitor_queue = tk.StringVar(value="0")
+        self.monitor_toks = tk.StringVar(value="0.0")
+        self.monitor_requests = tk.StringVar(value="0")
         self.endpoint = tk.StringVar(value="http://127.0.0.1:8080/v1")
         self._theme()
         self._layout()
         self.family.trace_add("write", self._family_changed)
         self.refresh_models()
+        self._track_dirty()
         self.after(120, self._poll)
         self.after(5000, self._metrics_timer)
 
@@ -115,88 +138,197 @@ class Desktop(tk.Tk):
         style.configure("TLabel", background=BG, foreground=TEXT)
         style.configure("Panel.TLabel", background=PANEL, foreground=TEXT)
         style.configure("Hint.TLabel", background=PANEL, foreground=MUTED, font=("Segoe UI", 9))
-        style.configure("Title.TLabel", background=BG, foreground=TEXT, font=("Segoe UI Semibold", 19))
-        style.configure("TButton", background=FIELD, foreground=TEXT, padding=(12, 8), borderwidth=0)
-        style.map("TButton", background=[("active", "#314965"), ("disabled", PANEL)],
+        style.configure("Title.TLabel", background=BG, foreground=TEXT, font=("Segoe UI Semibold", 21))
+        style.configure("TButton", background=FIELD, foreground=TEXT,
+                        padding=(13, 9), borderwidth=0, relief="flat")
+        style.map("TButton", background=[("active", "#355273"), ("disabled", PANEL)],
                   foreground=[("disabled", MUTED)])
-        style.configure("Accent.TButton", background=ACCENT, foreground="#061520",
-                        font=("Segoe UI Semibold", 10))
-        style.map("Accent.TButton", background=[("active", "#79d9ed"), ("disabled", FIELD)])
-        style.configure("TEntry", fieldbackground=FIELD, foreground=TEXT, insertcolor=TEXT, padding=5)
+        style.configure("Accent.TButton", background=ACCENT, foreground=BG,
+                        padding=(16, 9), font=("Segoe UI Semibold", 10), borderwidth=0)
+        style.map("Accent.TButton", background=[("active", "#a4f5df"), ("disabled", FIELD)],
+                  foreground=[("disabled", MUTED)])
+        style.configure("Danger.TButton", background="#453148", foreground="#ffe5e9")
+        style.map("Danger.TButton", background=[("active", "#704255")])
+        style.configure("TEntry", fieldbackground=FIELD, foreground=TEXT,
+                        insertcolor=TEXT, padding=7, borderwidth=0)
         style.configure("TCombobox", fieldbackground=FIELD, background=FIELD, foreground=TEXT,
-                        selectbackground=FIELD, selectforeground=TEXT, arrowcolor=TEXT, padding=4)
+                        selectbackground=FIELD, selectforeground=TEXT, arrowcolor=TEXT, padding=6)
         style.map("TCombobox", fieldbackground=[("readonly", FIELD)], foreground=[("readonly", TEXT)],
                   selectbackground=[("readonly", FIELD)], selectforeground=[("readonly", TEXT)])
         style.configure("TCheckbutton", background=PANEL, foreground=TEXT)
-        style.configure("TNotebook", background=BG, borderwidth=0)
-        style.configure("TNotebook.Tab", background=PANEL, foreground=MUTED, padding=(18, 11))
-        style.map("TNotebook.Tab", background=[("selected", FIELD)], foreground=[("selected", TEXT)])
+        style.map("TCheckbutton", background=[("active", PANEL)])
         style.configure("Treeview", background=PANEL, fieldbackground=PANEL, foreground=TEXT,
-                        rowheight=28, borderwidth=0)
-        style.configure("Treeview.Heading", background=FIELD, foreground=TEXT, relief="flat")
-        style.map("Treeview", background=[("selected", "#226581")], foreground=[("selected", TEXT)])
+                        rowheight=35, borderwidth=0)
+        style.configure("Treeview.Heading", background=FIELD, foreground=MUTED,
+                        font=("Segoe UI Semibold", 9), relief="flat", padding=6)
+        style.map("Treeview", background=[("selected", "#275d69")],
+                  foreground=[("selected", TEXT)])
         self.option_add("*TCombobox*Listbox.background", FIELD)
         self.option_add("*TCombobox*Listbox.foreground", TEXT)
 
     def _layout(self):
-        header = ttk.Frame(self, padding=(20, 14))
-        header.pack(fill="x")
-        ttk.Label(header, text="STRATA  /  DESKTOP", style="Title.TLabel").pack(side="left")
-        ttk.Label(header, textvariable=self.status, foreground=ACCENT).pack(side="right", padx=12)
-        bar = ttk.Frame(self, padding=(20, 0, 20, 12))
-        bar.pack(fill="x")
-        ttk.Label(bar, text=str(self.root_dir), foreground=MUTED).pack(side="left")
-        self.stop_button = ttk.Button(bar, text="Stop", command=self.stop_server)
-        self.stop_button.pack(side="right", padx=(8, 0))
-        self.start_button = ttk.Button(bar, text="Start selected model", style="Accent.TButton",
-                                       command=self.start_server)
-        self.start_button.pack(side="right", padx=(8, 0))
-        ttk.Button(bar, text="Open Chat", command=self.open_chat).pack(side="right")
+        shell = tk.Frame(self, background=BG)
+        shell.pack(fill="both", expand=True)
+        sidebar = tk.Frame(shell, bg=NAV, width=218, padx=17, pady=23)
+        sidebar.pack(side="left", fill="y")
+        sidebar.pack_propagate(False)
 
-        self.tabs = ttk.Notebook(self)
-        self.tabs.pack(expand=True, fill="both", padx=20, pady=(0, 14))
-        models = ttk.Frame(self.tabs, padding=16)
-        engine = ttk.Frame(self.tabs, padding=16)
-        api = ttk.Frame(self.tabs, padding=16)
-        chat = ttk.Frame(self.tabs, padding=16)
-        monitor = ttk.Frame(self.tabs, padding=16)
-        logs = ttk.Frame(self.tabs, padding=16)
-        self.tabs.add(models, text="Models")
-        self.tabs.add(engine, text="Engine")
-        self.tabs.add(api, text="API & Tools")
-        self.tabs.add(chat, text="Chat")
-        self.tabs.add(monitor, text="Monitor")
-        self.tabs.add(logs, text="Activity")
-        self._models_tab(models)
-        self._engine_tab(engine)
-        self._api_tab(api)
-        self._chat_tab(chat)
-        self._monitor_tab(monitor)
-        self._logs_tab(logs)
+        tk.Label(sidebar, text="◈  STRATA", bg=NAV, fg=ACCENT,
+                 font=("Segoe UI Semibold", 20), anchor="w").pack(fill="x")
+        tk.Label(sidebar, text="LOCAL AI  /  CONTROL CENTER", bg=NAV, fg=MUTED,
+                 font=("Segoe UI", 8), anchor="w").pack(fill="x", pady=(2, 35))
+        self.nav_buttons = []
+        names = ["Models", "Engine", "API & Tools", "Chat", "Monitor", "Activity"]
+        tags = ["01", "02", "03", "04", "05", "06"]
+        for index, name in enumerate(names):
+            btn = tk.Button(sidebar, text=f"{tags[index]}    {name}", bg=NAV, fg=MUTED,
+                            activebackground=FIELD, activeforeground=TEXT, relief="flat",
+                            bd=0, cursor="hand2", anchor="w", padx=15, pady=13,
+                            font=("Segoe UI Semibold", 10),
+                            command=lambda number=index: self._show_page(number))
+            btn.pack(fill="x", pady=2)
+            self.nav_buttons.append(btn)
+        tk.Frame(sidebar, bg=NAV).pack(fill="both", expand=True)
+        tk.Frame(sidebar, bg=BORDER, height=1).pack(fill="x", pady=(5, 17))
+        tk.Label(sidebar, text="SERVER STATUS", bg=NAV, fg=MUTED,
+                 font=("Segoe UI Semibold", 9), anchor="w").pack(fill="x")
+        self.side_status = tk.Label(sidebar, textvariable=self.status, bg=NAV, fg=WARNING,
+                                    font=("Segoe UI Semibold", 12), anchor="w")
+        self.side_status.pack(fill="x", pady=(5, 2))
+        tk.Label(sidebar, textvariable=self.active_model_text, bg=NAV, fg=MUTED,
+                 wraplength=183, justify="left", font=("Segoe UI", 9), anchor="w").pack(fill="x")
+
+        work = tk.Frame(shell, bg=BG, padx=23, pady=21)
+        work.pack(side="left", fill="both", expand=True)
+        mast = tk.Frame(work, bg=BG)
+        mast.pack(fill="x")
+        title_col = tk.Frame(mast, bg=BG)
+        title_col.pack(side="left", fill="both", expand=True)
+        self.page_title = tk.Label(title_col, text="Models", bg=BG, fg=TEXT,
+                                   font=("Segoe UI Semibold", 23), anchor="w")
+        self.page_title.pack(anchor="w")
+        self.page_desc = tk.Label(title_col, text="Manage your local intelligence", bg=BG, fg=MUTED,
+                                  font=("Segoe UI", 10), anchor="w")
+        self.page_desc.pack(anchor="w", pady=(2, 0))
+        actions = tk.Frame(mast, bg=BG)
+        actions.pack(side="right")
+        self.start_button = ttk.Button(actions, text="▶  Start model", style="Accent.TButton",
+                                       command=self.start_server)
+        self.start_button.pack(side="left", padx=(0, 7))
+        self.stop_button = ttk.Button(actions, text="■  Stop", style="Danger.TButton",
+                                      command=self.stop_server)
+        self.stop_button.pack(side="left", padx=(0, 7))
+        ttk.Button(actions, text="Open web UI ↗", command=self.open_chat).pack(side="left")
+
+        ribbon = tk.Frame(work, bg=PANEL, highlightbackground=BORDER, highlightthickness=1,
+                          padx=14, pady=9)
+        ribbon.pack(fill="x", pady=(18, 15))
+        tk.Label(ribbon, text="PROJECT", bg=PANEL, fg=ACCENT,
+                 font=("Segoe UI Semibold", 9)).pack(side="left", padx=(0, 12))
+        tk.Label(ribbon, text=str(self.root_dir), bg=PANEL, fg=MUTED,
+                 font=("Segoe UI", 9), anchor="w").pack(side="left", fill="x", expand=True)
+        self.dirty_label = tk.Label(ribbon, text="", bg=PANEL, fg=WARNING,
+                                    font=("Segoe UI Semibold", 9))
+        self.dirty_label.pack(side="right")
+
+        self.page_host = tk.Frame(work, bg=BG)
+        self.page_host.pack(fill="both", expand=True)
+        self.pages = []
+        for i in range(6):
+            page = tk.Frame(self.page_host, bg=BG)
+            self.pages.append(page)
+            inner = page if i in (3, 4, 5) else self._scroll_page(page)
+            if i == 0:
+                self._models_tab(inner)
+            elif i == 1:
+                self._engine_tab(inner)
+            elif i == 2:
+                self._api_tab(inner)
+            elif i == 3:
+                self._chat_tab(inner)
+            elif i == 4:
+                self._monitor_tab(inner)
+            else:
+                self._logs_tab(inner)
+
+        footer = tk.Frame(work, bg=BG, pady=9)
+        footer.pack(fill="x")
+        tk.Label(footer, text="●", bg=BG, fg=ACCENT, font=("Segoe UI", 9)).pack(side="left")
+        tk.Label(footer, textvariable=self.current_activity, bg=BG, fg=MUTED,
+                 font=("Segoe UI", 9)).pack(side="left", fill="x", expand=True, padx=7)
+        tk.Label(footer, text="1 GENERATION  •  QUEUED REQUESTS", bg=BG, fg=MUTED,
+                 font=("Segoe UI Semibold", 8)).pack(side="right")
+        self._page_index = 0
+        self._show_page(0)
         self._set_busy(False)
 
+    def _scroll_page(self, page):
+        canvas = tk.Canvas(page, bg=BG, highlightthickness=0, bd=0)
+        scrollbar = ttk.Scrollbar(page, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        inner = ttk.Frame(canvas, padding=(1, 1, 10, 12))
+        item = canvas.create_window((0, 0), anchor="nw", window=inner)
+        inner.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(item, width=e.width))
+        def wheel(event):
+            if self._page_index < 3:
+                canvas.yview_scroll(-int(event.delta / 120), "units")
+        canvas.bind("<MouseWheel>", wheel)
+        inner.bind("<MouseWheel>", wheel)
+        return inner
+
+    def _show_page(self, index):
+        headings = [
+            ("Models", "Your installed checkpoints and model storage"),
+            ("Engine", "Tune hardware resources and inference behaviour"),
+            ("API & Tools", "Local serving, LAN access and integrations"),
+            ("Quick Chat", "Chat directly with the running local model"),
+            ("Monitor", "Runtime, throughput and hardware telemetry"),
+            ("Activity", "Download, engine and server activity logs"),
+        ]
+        for frame in self.pages:
+            frame.pack_forget()
+        self.pages[index].pack(fill="both", expand=True)
+        self._page_index = index
+        self.page_title.configure(text=headings[index][0])
+        self.page_desc.configure(text=headings[index][1])
+        for i, button in enumerate(self.nav_buttons):
+            button.configure(bg=FIELD if i == index else NAV,
+                             fg=ACCENT if i == index else MUTED)
+        if index == 4:
+            self.fetch_metrics()
+
     def _section(self, parent, title, description=""):
-        wrapper = ttk.Frame(parent, style="Panel.TFrame", padding=15)
-        wrapper.pack(fill="x", pady=(0, 12))
+        outline = tk.Frame(parent, bg=PANEL, highlightbackground=BORDER, highlightthickness=1)
+        outline.pack(fill="x", pady=(0, 14))
+        wrapper = ttk.Frame(outline, style="Panel.TFrame", padding=18)
+        wrapper.pack(fill="both", expand=True)
         ttk.Label(wrapper, text=title, style="Panel.TLabel",
-                  font=("Segoe UI Semibold", 12)).pack(anchor="w", pady=(0, 3))
+                  font=("Segoe UI Semibold", 12)).pack(anchor="w", pady=(0, 4))
         if description:
-            ttk.Label(wrapper, text=description, style="Hint.TLabel", wraplength=950).pack(anchor="w", pady=(0, 10))
+            ttk.Label(wrapper, text=description, style="Hint.TLabel",
+                      wraplength=760, justify="left").pack(anchor="w", pady=(0, 12))
         grid = ttk.Frame(wrapper, style="Panel.TFrame")
         grid.pack(fill="x")
         grid.columnconfigure(1, weight=1)
         return grid
 
     def _field(self, parent, line, title, variable, values=None, browse=None, secret=False):
-        ttk.Label(parent, text=title, style="Panel.TLabel").grid(row=line, column=0, sticky="w", pady=5, padx=(0, 16))
+        ttk.Label(parent, text=title, style="Panel.TLabel").grid(
+            row=line, column=0, sticky="w", pady=6, padx=(0, 20))
         if values is not None:
-            w = ttk.Combobox(parent, textvariable=variable, values=values, state="readonly", width=25)
+            widget = ttk.Combobox(parent, textvariable=variable, values=values,
+                                  state="readonly", width=26)
         else:
-            w = ttk.Entry(parent, textvariable=variable, show="*" if secret else "", width=48)
-        w.grid(row=line, column=1, sticky="ew", pady=5)
+            widget = ttk.Entry(parent, textvariable=variable, show="*" if secret else "",
+                               width=46)
+        widget.grid(row=line, column=1, sticky="ew", pady=6)
         if browse:
-            ttk.Button(parent, text="Browse", command=browse).grid(row=line, column=2, padx=(10, 0), pady=5)
-        return w
+            ttk.Button(parent, text="Browse…", command=browse).grid(
+                row=line, column=2, padx=(10, 0), pady=6)
+        return widget
 
     def _models_tab(self, parent):
         top = self._section(parent, "Installed models",
@@ -498,7 +630,7 @@ class Desktop(tk.Tk):
         self.operation = kind
         self.status.set({"setup": "Preparing model", "calibration": "Calibrating", "server": "Starting"}[kind])
         self._set_busy(True)
-        self.tabs.select(5)
+        self._show_page(5)
         threading.Thread(target=self._worker, args=(kind, command, bootstrap), daemon=True).start()
 
     def _worker(self, kind, command, bootstrap):
@@ -672,7 +804,7 @@ class Desktop(tk.Tk):
 
     def _metrics_timer(self):
         if self.winfo_exists():
-            if self.tabs.index(self.tabs.select()) == 4:
+            if self._page_index == 4:
                 self.fetch_metrics()
             self.after(5000, self._metrics_timer)
 
