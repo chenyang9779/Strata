@@ -68,13 +68,17 @@ class DesktopCoreTests(unittest.TestCase):
 
     def test_valid_sibling_data_root(self):
         requested = self.base / "Strata-data"
-        self.assertEqual(core.validate_data_root(self.root, requested), requested)
+        self.assertEqual(core.validate_data_root(self.root, requested), requested.resolve())
 
     def test_lan_requires_api_key(self):
         with self.assertRaisesRegex(ValueError, "API key"):
             core.validate_runtime("0.0.0.0", "8080", "", "Auto", "0", "0", "auto", "auto")
         self.assertEqual(core.validate_runtime(
             "0.0.0.0", "9000", "private-key", "1", "6", "4", "4096", "2048"), (9000, 6, 4, 1))
+
+    def test_zero_expert_cache_is_rejected_with_default_speculative_engine(self):
+        with self.assertRaisesRegex(ValueError, "positive slot count"):
+            core.validate_runtime("127.0.0.1", "8080", "", "Auto", "0", "0", "0", "auto")
 
     def test_invalid_settings_do_not_change_model_json(self):
         path = self.config()
@@ -116,8 +120,8 @@ class DesktopCoreTests(unittest.TestCase):
                                  data_dir=self.base / "Strata-data", gpu="0", gguf_dir=str(gguf))
         self.assertIn("--no-start", cmd)
         self.assertEqual(cmd[cmd.index("--family") + 1], "coder")
-        self.assertEqual(cmd[cmd.index("--data-dir") + 1], str(self.base / "Strata-data"))
-        self.assertEqual(cmd[cmd.index("--gguf-dir") + 1], str(gguf))
+        self.assertEqual(Path(cmd[cmd.index("--data-dir") + 1]).resolve(), (self.base / "Strata-data").resolve())
+        self.assertEqual(Path(cmd[cmd.index("--gguf-dir") + 1]).resolve(), gguf.resolve())
         with self.assertRaises(ValueError):
             core.setup_command(Path("python.exe"), self.root, family="swift", model="IQ3_S",
                                context=32768, kv="int8", vision="none", projection="off",
