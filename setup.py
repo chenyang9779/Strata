@@ -753,6 +753,24 @@ def save_settings(s: dict) -> None:
         warn(f"could not save {settings_path()} ({e})")
 
 
+def choose_data_dir(default: Path) -> str:
+    """Ask for model storage before any downloads. Enter retains the remembered/default location."""
+    say()
+    say("  Model storage: downloads, prepared packs and the draft layer use about 70-120 GB.")
+    say("  Choose a folder on a drive with enough free space, or press Enter to keep this location.")
+    while True:
+        try:
+            answer = input(f"Model storage folder [{default}]: ").strip().strip('"')
+        except EOFError:
+            return str(default)
+        if not answer:
+            return str(default)
+        folder = Path(answer).expanduser()
+        if folder.is_absolute():
+            return str(folder)
+        say("  please enter an absolute directory path")
+
+
 def has_data(folder: Path) -> bool:
     for d in DATA_ITEMS:
         try:
@@ -846,14 +864,20 @@ def data_folder(requested: str | None) -> tuple:
     """(the data folder, folders on other drives that still hold model files).  Moves the model files of this folder
     and of earlier Strata folders on the same drive into the data folder, and points their configs there."""
     settings = load_settings()
-    dest = Path(requested).expanduser().resolve() if requested else \
-        Path(settings["data_dir"]) if settings.get("data_dir") else ROOT.parent / "Strata-data"
+    dest = (Path(requested).expanduser() if requested else
+            Path(settings["data_dir"]).expanduser() if settings.get("data_dir") else
+            ROOT.parent / "Strata-data").resolve()
+    # A new destination is for future downloads. Keep older data directories available for reuse; never
+    # silently copy or move tens of gigabytes from a previous, explicitly selected storage location.
+    previous = [Path(p).expanduser().resolve() for p in
+                [settings.get("data_dir"), *settings.get("previous_data_dirs", [])] if p]
+    retained = [p for p in dict.fromkeys(previous) if p != dest and has_data(p)]
     try:
         dest.mkdir(parents=True, exist_ok=True)
     except OSError as e:                                # e.g. no write access next to the Strata folder
         warn(f"cannot use {dest} for the model files ({e}): keeping them in {ROOT}")
         dest = ROOT
-    elsewhere = []
+    elsewhere = list(retained)
     for folder in [ROOT, *other_installs(settings)]:
         if folder == dest or not has_data(folder):
             continue
@@ -881,8 +905,9 @@ def data_folder(requested: str | None) -> tuple:
         else:
             ok(f"model files from {folder} moved to {dest} (a new copy of Strata finds them there)")
     installs = [str(ROOT)] + [p for p in settings.get("installs", []) if p != str(ROOT) and Path(p).is_dir()]
-    save_settings({**settings, "data_dir": str(dest), "installs": installs[:20]})
-    return dest, elsewhere
+    save_settings({**settings, "data_dir": str(dest), "previous_data_dirs": [str(p) for p in retained],
+                   "installs": installs[:20]})
+    return dest, list(dict.fromkeys(elsewhere))
 
 
 def previous_config(elsewhere_first: list, settings: dict):
@@ -1104,13 +1129,17 @@ def main() -> int:
     ap.add_argument("--skip-build", action="store_true", help=argparse.SUPPRESS)
     a = ap.parse_args()
     say("Strata - Qwen3.8-Flash-Next on a normal PC (NVIDIA GPU + system RAM + CPU)")
+    have = installed_configs()
+    saved_data = load_settings().get("data_dir")
+    if a.data_dir is None and not a.yes and not a.check and (a.setup or (not have and not saved_data)):
+        default_data = Path(saved_data).expanduser() if saved_data else ROOT.parent / "Strata-data"
+        a.data_dir = choose_data_dir(default_data)
     data, elsewhere = data_folder(a.data_dir)          # the model files: in the data folder, found from any copy
     roots = [data, *elsewhere]
     if a.models_dir is None:
         a.models_dir = str(data / "models")
 
     # ---- 0. already installed: just start it
-    have = installed_configs()
     explicit = a.setup or a.model or a.family or a.check or a.no_start
     if not have and not explicit:                      # a new copy of Strata (an update unzipped elsewhere): set it
         prev = previous_config(elsewhere, load_settings())   # up like the last one, from the files already here
@@ -1448,6 +1477,7 @@ def main() -> int:
         say(f"  Other devices:    the server window prints this PC's address (http://<IP>:{port}/)"
             + ("" if a.api_key else " - no API key set: anyone on your network can use it"))
     say(f"  Next time:        just run {'START-HERE.bat' if WIN else './setup.sh'} (or {script.name}) - it starts right away")
+    say(f"  Change model:     run {'SETUP.bat' if WIN else './setup.sh --setup'} to install another model or change settings")
     if vision != "none":
         say("  Images:           send them in the chat page, in chat.py (/image <path>) or over the API")
     if a.no_start:
