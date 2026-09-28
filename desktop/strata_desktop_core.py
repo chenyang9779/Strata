@@ -130,10 +130,10 @@ def validate_runtime(host: str, port: str | int, api_key: str, gpu: str,
         raise ValueError("GPU index cannot be negative.")
     if expert_cache != "auto":
         try:
-            if not 0 <= int(expert_cache) <= 1000000:
+            if not 1 <= int(expert_cache) <= 1000000:
                 raise ValueError
         except ValueError as exc:
-            raise ValueError("Expert cache must be auto or a non-negative slot count.") from exc
+            raise ValueError("Expert cache must be auto or a positive slot count (the default speculative engine needs cache).") from exc
     if prefill not in ("auto", "512", "1024", "2048", "4096", "8192"):
         raise ValueError("Invalid prefill chunk size.")
     return parsed_port, workers, vision, device
