@@ -137,9 +137,9 @@ their previous location and are reused; Strata does not silently copy or delete 
 
 ### Windows desktop manager
 
-Double-click **`DESKTOP.bat`** to open Strata's native Windows model and server manager. It supports model
-installation/selection, data storage, GPU and CPU expert workers, VRAM cache/prefill settings, API binding and key,
-Quick Chat, a live Monitor, logs and optional MCP tools. To package the GUI as a standalone Windows executable, run
+Double-click **`DESKTOP.bat`** to open Strata's native Windows control centre. Its sidebar organises model
+installation/selection, storage, GPU and CPU expert workers, VRAM cache/prefill settings, API binding/key/LAN URLs,
+streaming Quick Chat, a live Monitor, activity logs and optional MCP tools. To package the GUI as a standalone Windows executable, run
 `BUILD-DESKTOP.bat` and keep the entire `dist\\StrataDesktop` directory together; the model and engine remain
 in the existing Strata installation. See [Desktop setup and controls](docs/DESKTOP.md).
 
