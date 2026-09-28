@@ -609,6 +609,10 @@ class Desktop(tk.Tk):
                 return
 
     def refresh_models(self, select_path=None):
+        if select_path is None and self.dirty and self.selected_path and not self.machine.busy:
+            if not messagebox.askyesno("Discard unsaved settings?",
+                                       "Refreshing reloads the saved configuration. Discard current edits?"):
+                return
         preferred = select_path or self.selected_path or self.prefs.get("last_selected")
         if preferred:
             preferred = Path(preferred)
@@ -984,7 +988,7 @@ class Desktop(tk.Tk):
                     self._set_busy(self.machine.busy)
                 elif kind == "metrics":
                     token, result, error = event[1:]
-                    if token != self.machine.generation:
+                    if token != self.machine.generation or self.machine.state != runtime.RunState.RUNNING:
                         continue
                     self.metrics_busy = False
                     if error:
