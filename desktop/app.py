@@ -126,6 +126,8 @@ class Desktop(tk.Tk):
 
     def _save_prefs(self):
         self.prefs["root"] = str(self.root_dir)
+        if self.selected_path is not None:
+            self.prefs["last_selected"] = str(self.selected_path)
         self.prefs["mcp_file"] = self.mcp_file.get() if hasattr(self, "mcp_file") else self.prefs.get("mcp_file", "")
         core.atomic_json(self.prefs_path, self.prefs)
 
@@ -333,9 +335,10 @@ class Desktop(tk.Tk):
     def _models_tab(self, parent):
         top = self._section(parent, "Installed models",
                             "Select an installed configuration to load its settings. Only one model can generate at a time.")
-        self.tree = ttk.Treeview(top, columns=("model", "context", "images"), show="headings", height=5)
-        for key, title, width in (("model", "Model", 330), ("context", "Context", 120),
-                                  ("images", "Images", 100)):
+        self.tree = ttk.Treeview(top, columns=("model", "context", "images", "files"),
+                                 show="headings", height=5)
+        for key, title, width in (("model", "Model", 290), ("context", "Context", 110),
+                                  ("images", "Images", 85), ("files", "Engine", 110)):
             self.tree.heading(key, text=title)
             self.tree.column(key, width=width, anchor="w")
         self.tree.grid(row=0, column=0, columnspan=3, sticky="ew")
@@ -502,44 +505,102 @@ class Desktop(tk.Tk):
     def browse_mcp(self):
         self._browse(self.mcp_file, files=True)
 
+    def _track_dirty(self):
+        for variable in (self.host, self.port, self.api_key, self.gpu,
+                         self.cpu_workers, self.vision_threads, self.expert_cache,
+                         self.prefill, self.fit_max_tokens):
+            variable.trace_add("write", self._mark_dirty)
+
+    def _mark_dirty(self, *_):
+        if not self._loading_form and self.selected_path is not None:
+            self.dirty = True
+            self.dirty_label.configure(text="● UNSAVED SETTINGS")
+            self.current_activity.set("Settings changed · save before the next start")
+
+    def _restore_tree_selection(self):
+        for item, (path, _) in self.model_files.items():
+            if path == self.selected_path:
+                self.tree.selection_set(item)
+                self.tree.focus(item)
+                return
+
     def refresh_models(self, select_path=None):
-        for item in self.tree.get_children():
-            self.tree.delete(item)
-        self.model_files.clear()
-        for path, cfg in core.installed_models(self.root_dir):
-            iid = self.tree.insert("", "end", values=(
-                cfg["model_name"],
-                core.flag_value(cfg["args"], "--max-context", "?"),
-                "Yes" if cfg.get("vision") else "No"))
-            self.model_files[iid] = (path, cfg)
-            if select_path and path == select_path:
-                self.tree.selection_set(iid)
-        if not self.tree.selection() and self.tree.get_children():
-            self.tree.selection_set(self.tree.get_children()[0])
+        preferred = select_path or self.selected_path or self.prefs.get("last_selected")
+        if preferred:
+            preferred = Path(preferred)
+        self._loading_form = True
+        try:
+            for item in self.tree.get_children():
+                self.tree.delete(item)
+            self.model_files.clear()
+            wanted = None
+            for path, cfg in core.installed_models(self.root_dir):
+                ready = "Ready" if Path(cfg["exe"]).is_file() else "Missing"
+                item = self.tree.insert("", "end", values=(
+                    cfg["model_name"],
+                    core.flag_value(cfg["args"], "--max-context", "?"),
+                    "Yes" if cfg.get("vision") else "No", ready))
+                self.model_files[item] = (path, cfg)
+                if preferred and path == preferred:
+                    wanted = item
+            items = self.tree.get_children()
+            if items:
+                self.tree.selection_set(wanted or items[0])
+                self.tree.focus(wanted or items[0])
+            else:
+                self.selected_path = None
+                self.selected_label.configure(text="No installed models · prepare one below.")
+        finally:
+            self._loading_form = False
         if self.tree.selection():
             self._select_model()
-        else:
-            self.selected_path = None
-            self.selected_label.configure(text="No installed model. Use the installer below.")
+        self._set_busy(self.machine.busy)
 
     def _select_model(self, _event=None):
+        if self._loading_form:
+            return
         selection = self.tree.selection()
         if not selection or selection[0] not in self.model_files:
             return
         path, cfg = self.model_files[selection[0]]
-        self.selected_path = path
-        self.selected_label.configure(text=path.name)
-        args = cfg["args"]
-        self.host.set(cfg.get("host") or "127.0.0.1")
-        self.port.set(str(cfg.get("port") or 8080))
-        self.api_key.set(cfg.get("api_key") or "")
-        self.gpu.set(str(cfg.get("gpu")) if cfg.get("gpu") is not None else "Auto")
-        self.cpu_workers.set(core.flag_value(args, "--pool-workers", "0"))
-        self.vision_threads.set(str(cfg.get("vision", {}).get("threads", 0)) if isinstance(cfg.get("vision"), dict) else "0")
-        self.expert_cache.set(core.flag_value(args, "--expert-cache", "auto"))
-        self.prefill.set(core.flag_value(args, "--prefill", "auto"))
-        self.fit_max_tokens.set(bool(cfg.get("fit_max_tokens", False)))
-        self.endpoint.set(core.local_url(cfg) + "/v1")
+        if self.dirty and self.selected_path and path != self.selected_path:
+            if self.machine.busy:
+                discard = messagebox.askyesno(
+                    "Discard changes?", "An operation is running, so settings cannot be saved now. "
+                    "Discard the unsaved changes and choose another model?")
+                if not discard:
+                    self._restore_tree_selection()
+                    return
+            else:
+                choice = messagebox.askyesnocancel(
+                    "Unsaved settings", "Save settings for the previous model before switching?\n"
+                    "Yes: save   ·   No: discard   ·   Cancel: stay on this model.")
+                if choice is None or (choice and not self.save_selected()):
+                    self._restore_tree_selection()
+                    return
+        self._loading_form = True
+        try:
+            self.selected_path = path
+            self.selected_label.configure(text=path.name +
+                                          ("  ·  currently running" if self.active_config_path == path else ""))
+            args = cfg["args"]
+            self.host.set(cfg.get("host") or "127.0.0.1")
+            self.port.set(str(cfg.get("port") or 8080))
+            self.api_key.set(cfg.get("api_key") or "")
+            self.gpu.set(str(cfg.get("gpu")) if cfg.get("gpu") is not None else "Auto")
+            self.cpu_workers.set(core.flag_value(args, "--pool-workers", "0"))
+            self.vision_threads.set(str(cfg.get("vision", {}).get("threads", 0))
+                                    if isinstance(cfg.get("vision"), dict) else "0")
+            self.expert_cache.set(core.flag_value(args, "--expert-cache", "auto"))
+            self.prefill.set(core.flag_value(args, "--prefill", "auto"))
+            self.fit_max_tokens.set(bool(cfg.get("fit_max_tokens", False)))
+            self.endpoint.set(core.local_url(cfg) + "/v1")
+            self.dirty = False
+            self.dirty_label.configure(text="")
+        finally:
+            self._loading_form = False
+        self._save_prefs()
+        self.current_activity.set("Selected " + str(cfg["model_name"]))
 
     def _runtime_values(self):
         return dict(host=self.host.get(), port=self.port.get(), api_key=self.api_key.get(),
