@@ -121,22 +121,30 @@ def chat_request(url: str, api_key: str, model: str, messages: list[dict],
 
 
 def metrics_summary(result: dict) -> dict:
-    """Keep the monitor stable across older/newer server field sets."""
-    live = result.get("live") or {}
-    totals = result.get("totals") or {}
-    engine = result.get("engine") or {}
-    hardware = result.get("hardware") or {}
+    """Keep the monitor stable across older/newer server field sets and partial snapshots."""
+    if not isinstance(result, dict):
+        raise APIError("The monitor received an invalid metrics response.")
+    def obj(value):
+        return value if isinstance(value, dict) else {}
+    def number(value, cast):
+        try:
+            return cast(value or 0)
+        except (ValueError, TypeError, OverflowError):
+            return cast(0)
+    live = obj(result.get("live"))
+    totals = obj(result.get("totals"))
+    engine = obj(result.get("engine"))
     return {
         "model": str(engine.get("model") or "Unknown"),
         "state": str(live.get("state") or "unknown"),
-        "queue": int(live.get("queued") or 0),
-        "tok_s": float(live.get("tok_s") or 0.0),
-        "prompt": int(live.get("prompt_tokens") or 0),
-        "generated": int(live.get("generated") or 0),
-        "requests": int(totals.get("requests") or 0),
-        "output_tokens": int(totals.get("output_tokens") or 0),
+        "queue": number(live.get("queued"), int),
+        "tok_s": number(live.get("tok_s"), float),
+        "prompt": number(live.get("prompt_tokens"), int),
+        "generated": number(live.get("generated"), int),
+        "requests": number(totals.get("requests"), int),
+        "output_tokens": number(totals.get("output_tokens"), int),
         "max_context": engine.get("max_context"),
-        "hardware": hardware,
+        "hardware": obj(result.get("hardware")),
     }
 
 
