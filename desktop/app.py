@@ -1270,4 +1270,15 @@ if __name__ == "__main__":
         ctypes.windll.shcore.SetProcessDpiAwareness(1)
     except (AttributeError, OSError, ValueError):
         pass
-    Desktop().mainloop()
+    application = Desktop()
+    if "--smoke" in sys.argv:
+        try:
+            application.withdraw()
+            for page in range(6):
+                application._show_page(page)
+            application.update_idletasks()
+        finally:
+            application._closing = True
+            application.destroy()
+    else:
+        application.mainloop()
