@@ -408,68 +408,110 @@ class Desktop(tk.Tk):
         self.save_api_button.grid(row=3, column=1, sticky="e", pady=10)
 
     def _chat_tab(self, parent):
-        bar = ttk.Frame(parent)
-        bar.pack(fill="x", pady=(0, 10))
-        ttk.Label(bar, text="Quick Chat  /  OpenAI-compatible API",
-                  font=("Segoe UI Semibold", 12)).pack(side="left")
-        ttk.Button(bar, text="Open full browser Chat", command=self.open_chat).pack(side="right")
-        ttk.Button(bar, text="New conversation", command=self.new_chat).pack(side="right", padx=8)
-        viewer = ttk.Frame(parent)
-        viewer.pack(fill="both", expand=True)
-        scroll = ttk.Scrollbar(viewer)
-        scroll.pack(side="right", fill="y")
-        self.chat_view = tk.Text(viewer, background=LOG_BG, foreground=TEXT, state="disabled",
-                                 wrap="word", font=("Segoe UI", 10), padx=14, pady=14,
-                                 highlightthickness=0, relief="flat", yscrollcommand=scroll.set)
+        header = tk.Frame(parent, bg=BG)
+        header.pack(fill="x", pady=(0, 13))
+        tk.Label(header, text="LOCAL CONVERSATION", bg=BG, fg=ACCENT,
+                 font=("Segoe UI Semibold", 10)).pack(side="left")
+        ttk.Button(header, text="Open full Chat ↗", command=self.open_chat).pack(side="right")
+        ttk.Button(header, text="New conversation", command=self.new_chat).pack(side="right", padx=8)
+
+        outer = tk.Frame(parent, bg=LOG_BG, highlightbackground=BORDER, highlightthickness=1)
+        outer.pack(fill="both", expand=True)
+        scrollbar = ttk.Scrollbar(outer)
+        scrollbar.pack(side="right", fill="y")
+        self.chat_view = tk.Text(outer, background=LOG_BG, foreground=TEXT, state="disabled",
+                                 wrap="word", font=("Segoe UI", 10), padx=17, pady=16,
+                                 highlightthickness=0, relief="flat", spacing2=5,
+                                 yscrollcommand=scrollbar.set)
         self.chat_view.pack(fill="both", expand=True)
-        self.chat_view.tag_configure("role", foreground=ACCENT, font=("Segoe UI Semibold", 10))
-        scroll.configure(command=self.chat_view.yview)
-        entry = ttk.Frame(parent)
-        entry.pack(fill="x", pady=(12, 0))
+        self.chat_view.tag_configure("role", foreground=ACCENT,
+                                     font=("Segoe UI Semibold", 10), spacing1=8)
+        self.chat_view.tag_configure("thought", foreground=MUTED,
+                                     font=("Segoe UI", 9, "italic"))
+        self.chat_view.tag_configure("error", foreground=WARNING)
+        scrollbar.configure(command=self.chat_view.yview)
+        self.chat_status = tk.StringVar(value="Start a model to begin chatting")
+        tk.Label(parent, textvariable=self.chat_status, bg=BG, fg=MUTED,
+                 font=("Segoe UI", 9), anchor="w").pack(fill="x", pady=(11, 6))
+        entry = tk.Frame(parent, bg=BG)
+        entry.pack(fill="x")
         self.chat_input = tk.Text(entry, height=3, wrap="word", background=FIELD,
                                   foreground=TEXT, insertbackground=TEXT, font=("Segoe UI", 10),
-                                  relief="flat", padx=10, pady=8)
+                                  relief="flat", highlightbackground=BORDER, highlightthickness=1,
+                                  padx=12, pady=10)
         self.chat_input.pack(side="left", fill="both", expand=True)
-        self.chat_input.bind("<Control-Return>", lambda _event: self.send_chat())
-        self.chat_send = ttk.Button(entry, text="Send", style="Accent.TButton", command=self.send_chat)
-        self.chat_send.pack(side="right", padx=(10, 0))
-        ttk.Label(parent, text="Ctrl+Enter sends. For image uploads, tools and advanced chat controls, use the browser Chat.",
-                  foreground=MUTED).pack(anchor="w", pady=(8, 0))
+        self.chat_input.bind("<Control-Return>", self._shortcut_send)
+        actions = tk.Frame(entry, bg=BG)
+        actions.pack(side="right", fill="y", padx=(10, 0))
+        self.chat_send = ttk.Button(actions, text="Send ↗", style="Accent.TButton",
+                                    command=self.send_chat)
+        self.chat_send.pack(fill="x", pady=(0, 5))
+        self.chat_stop = ttk.Button(actions, text="Cancel reply", command=self.cancel_chat)
+        self.chat_stop.pack(fill="x")
+        self.chat_stop.configure(state="disabled")
+        tk.Label(parent, text="Ctrl+Enter to send • Streaming replies • For images and advanced tools, use the full web app.",
+                 bg=BG, fg=MUTED, font=("Segoe UI", 9), anchor="w").pack(fill="x", pady=(9, 0))
+
+    def _shortcut_send(self, _event):
+        self.send_chat()
+        return "break"
+
+    def _metric(self, frame, name, value, col):
+        card = tk.Frame(frame, bg=PANEL, highlightbackground=BORDER,
+                        highlightthickness=1, padx=15, pady=12)
+        card.grid(row=0, column=col, sticky="nsew", padx=(0, 10) if col < 3 else 0)
+        tk.Label(card, text=name.upper(), bg=PANEL, fg=MUTED,
+                 font=("Segoe UI Semibold", 8)).pack(anchor="w")
+        tk.Label(card, textvariable=value, bg=PANEL, fg=ACCENT,
+                 font=("Segoe UI Semibold", 21)).pack(anchor="w", pady=(4, 0))
+        frame.columnconfigure(col, weight=1, uniform="metrics")
 
     def _monitor_tab(self, parent):
-        bar = ttk.Frame(parent)
-        bar.pack(fill="x", pady=(0, 10))
-        ttk.Label(bar, text="Live engine and hardware metrics",
-                  font=("Segoe UI Semibold", 12)).pack(side="left")
-        ttk.Button(bar, text="Open full Monitor", command=self.open_chat).pack(side="right")
+        bar = tk.Frame(parent, bg=BG)
+        bar.pack(fill="x", pady=(0, 14))
+        tk.Label(bar, text="MODEL TELEMETRY", bg=BG, fg=ACCENT,
+                 font=("Segoe UI Semibold", 10)).pack(side="left")
+        ttk.Button(bar, text="Open web Monitor ↗", command=self.open_monitor).pack(side="right")
         ttk.Button(bar, text="Refresh", command=self.fetch_metrics).pack(side="right", padx=8)
-        outer = ttk.Frame(parent)
+        cards = tk.Frame(parent, bg=BG)
+        cards.pack(fill="x", pady=(0, 14))
+        self._metric(cards, "State", self.monitor_state, 0)
+        self._metric(cards, "Tokens / sec", self.monitor_toks, 1)
+        self._metric(cards, "Queue", self.monitor_queue, 2)
+        self._metric(cards, "Requests served", self.monitor_requests, 3)
+        outer = tk.Frame(parent, bg=LOG_BG, highlightbackground=BORDER, highlightthickness=1)
         outer.pack(fill="both", expand=True)
-        scroll = ttk.Scrollbar(outer)
-        scroll.pack(side="right", fill="y")
-        self.metrics_view = tk.Text(outer, background=LOG_BG, foreground="#cce7f2",
+        scrollbar = ttk.Scrollbar(outer)
+        scrollbar.pack(side="right", fill="y")
+        self.metrics_view = tk.Text(outer, background=LOG_BG, foreground="#d1e8f4",
                                     font=("Consolas", 10), wrap="word", relief="flat",
-                                    highlightthickness=0, padx=14, pady=14, yscrollcommand=scroll.set)
+                                    highlightthickness=0, padx=16, pady=14,
+                                    yscrollcommand=scrollbar.set)
         self.metrics_view.pack(fill="both", expand=True)
-        self.metrics_view.insert("end", "Start a model to view live metrics.\n")
-        scroll.config(command=self.metrics_view.yview)
+        self.metrics_view.insert("end", "Start a model to view live engine and hardware data.\n")
+        scrollbar.config(command=self.metrics_view.yview)
 
     def _logs_tab(self, parent):
-        row = ttk.Frame(parent)
-        row.pack(fill="x", pady=(0, 8))
-        ttk.Label(row, text="Installer, server and engine output").pack(side="left")
-        ttk.Button(row, text="Clear view", command=lambda: self.log_text.delete("1.0", "end")).pack(side="right")
-        outer = ttk.Frame(parent)
+        bar = tk.Frame(parent, bg=BG)
+        bar.pack(fill="x", pady=(0, 12))
+        tk.Label(bar, text="ACTIVITY STREAM", bg=BG, fg=ACCENT,
+                 font=("Segoe UI Semibold", 10)).pack(side="left")
+        ttk.Button(bar, text="Export log…", command=self.export_log).pack(side="right")
+        ttk.Button(bar, text="Clear view", command=lambda: self.log_text.delete("1.0", "end")).pack(
+            side="right", padx=7)
+        outer = tk.Frame(parent, bg=LOG_BG, highlightbackground=BORDER, highlightthickness=1)
         outer.pack(fill="both", expand=True)
-        scroll = ttk.Scrollbar(outer)
-        scroll.pack(side="right", fill="y")
-        self.log_text = tk.Text(outer, background=LOG_BG, foreground="#cce7f2",
+        scrollbar = ttk.Scrollbar(outer)
+        scrollbar.pack(side="right", fill="y")
+        self.log_text = tk.Text(outer, background=LOG_BG, foreground="#d1e8f4",
                                 insertbackground=TEXT, font=("Consolas", 9), wrap="word",
-                                relief="flat", highlightthickness=0, padx=12, pady=10,
-                                state="normal", yscrollcommand=scroll.set)
+                                relief="flat", highlightthickness=0, padx=14, pady=12,
+                                yscrollcommand=scrollbar.set)
         self.log_text.pack(fill="both", expand=True)
-        scroll.config(command=self.log_text.yview)
-        self._log("Strata Desktop is ready. Select a model or install a new one.")
+        scrollbar.config(command=self.log_text.yview)
+        self.log_text.tag_configure("log_error", foreground=WARNING)
+        self.log_text.tag_configure("log_ready", foreground=SUCCESS)
+        self._log("Strata Desktop is ready. Select or prepare a model.")
 
     def _gpu_options(self):
         options = ["Auto"]
