@@ -14,7 +14,9 @@ The Windows GitHub Actions workflow also builds a ZIP artifact of the GUI. The a
 
 - **Models:** choose an installed model, configure Qwen/Swift/Coder quantization, context, KV precision, vision, optional existing GGUF folder and data root; prepare or switch models without deleting existing configurations.
 - **Engine:** GPU index, CPU expert worker count (`--pool-workers`; 0 = automatic), vision encoder threads, VRAM expert cache and prefill chunk; optionally calibrate the selected configuration using the existing tuning code.
-- **API & Tools:** bind address, port, API key generation, fit-max-tokens, optional MCP configuration JSON, local API URL and browser Chat. Network binding requires an API key in the desktop app. It listens on all interfaces when set to `0.0.0.0`; clients should use the PC's LAN address rather than `0.0.0.0`.
+- **API & Tools:** bind address, port, API key generation, fit-max-tokens, optional MCP configuration JSON and local API URL. Network binding requires an API key in the desktop app. It listens on all interfaces when set to `0.0.0.0`; clients should use the PC's LAN address rather than `0.0.0.0`.
+- **Chat:** native Quick Chat through the running Strata API; the full browser Chat remains available for image uploads, tool usage and advanced controls.
+- **Monitor:** live engine, request and hardware metrics read from the existing authenticated `/metrics` endpoint.
 - **Activity:** live installer/engine/server output and start/stop controls. Stop terminates the supervised process tree on Windows (including in-flight requests).
 
 **Concurrency:** the current engine supports **one active model-generation request**; additional requests are queued by the HTTP server. CPU workers are parallel expert-computation threads, not concurrent model-request slots. The desktop intentionally does not offer a misleading "concurrent generations" switch. Changing advanced options requires stopping and restarting the server.
