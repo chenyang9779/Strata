@@ -89,6 +89,8 @@ App). Everything else - Python, the engine, the model - is set up for you.
 1. [Download this project](https://github.com/Niko1221/Strata/archive/refs/heads/main.zip) and unzip it (or `git clone` it).
 2. Double-click **`START-HERE.bat`**.
 3. Answer a few questions - or just press Enter each time for the recommended choice:
+   - **Where to store model files?** The default is `Strata-data` next to the project. Choose an absolute path on
+     another drive if you prefer; Strata remembers it for future runs.
    - **Which model and size?** The original or Swift 1.5, and Q2_0, IQ2_XS, IQ3_XXS or IQ3_S - see [above](#which-model-should-i-pick)
    - **How much context?** How much text it can keep in mind at once (it suggests one for your card)
    - **Images?** Whether it should also read pictures
@@ -101,14 +103,37 @@ where it left off) and **starts the model**. Your browser opens the Strata app a
 > loads 35-55 GB into your RAM and locks part of it for the graphics card. That's normal - wait, and don't close the
 > window. The window tells you what it is doing.
 
-**Next time**, just double-click `START-HERE.bat` again: it starts right away, nothing is downloaded twice. Close its
-window to stop the model.
+**Next time**, just double-click `START-HERE.bat` again: it starts your installed model (or offers a choice if
+you have installed several). Nothing is downloaded twice. Close its window to stop the model.
 
 **Updating:** download the new version and unzip it anywhere (or `git pull`), then run `START-HERE.bat` in it. The
-model files are kept in a `Strata-data` folder next to your Strata folder, so a new copy finds them and sets itself up
-the same way - nothing big is downloaded again.
+model files are kept in your chosen data folder (by default `Strata-data` next to Strata); a new copy finds that
+location and sets itself up the same way - nothing big is downloaded again.
 
 **Linux:** run `./setup.sh` - same questions, same result.
+
+### Changing the model or storage folder later
+
+Stop the running model first. To install a different family or size, double-click **`SETUP.bat`** on Windows
+(equivalent to `START-HERE.bat --setup`), or run **`./setup.sh --setup`** on Linux. Pick the new family and size.
+Previously installed models remain available: the next normal start shows a menu when more than one model is
+configured. Changing the model is a restart/setup operation, not a switch in an active chat.
+
+To choose a storage folder without the interactive question, pass `--data-dir`:
+
+```bat
+START-HERE.bat --data-dir "D:\Strata-data"
+```
+
+```sh
+./setup.sh --data-dir "/mnt/ssd/Strata-data"
+```
+
+The selected folder is remembered for subsequent runs and contains GGUF downloads, prepared packs and the draft
+layer. `--models-dir` separately overrides **only** the GGUF download folder. To change the destination of *future*
+downloads after installation, run `SETUP.bat --data-dir "D:\Strata-data"` (Windows) or
+`./setup.sh --setup --data-dir "/mnt/ssd/Strata-data"` (Linux). Existing model files and configurations remain at
+their previous location and are reused; Strata does not silently copy or delete existing large files.
 
 ## Using it
 
