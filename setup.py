@@ -757,6 +757,8 @@ def choose_data_dir(default: Path) -> str:
     """Ask for model storage before any downloads. Enter retains the remembered/default location."""
     say()
     say("  Model storage: downloads, prepared packs and the draft layer use about 70-120 GB.")
+    say("  Choose a DATA ROOT: Strata creates models/, packs/ and mtp/ below it.")
+    say("  Do not select an existing models/, packs/ or mtp/ folder.")
     say("  Choose a folder on a drive with enough free space, or press Enter to keep this location.")
     while True:
         try:
@@ -779,6 +781,28 @@ def has_data(folder: Path) -> bool:
         except OSError:
             pass
     return False
+
+
+def validate_data_roots(dest: Path, roots: list[Path]) -> None:
+    """Reject ambiguous data roots and previously interrupted self-nesting before moving any files."""
+    dest = dest.resolve()
+    for root in dict.fromkeys(p.resolve() for p in roots):
+        for name in DATA_ITEMS:
+            data_subdir = (root / name).resolve()
+            # A data root has models/, packs/ and mtp/ beneath it. It cannot itself be inside any of those
+            # directories of an existing Strata install or previously selected data root.
+            if root != dest and (dest == data_subdir or data_subdir in dest.parents):
+                fail(f"unsafe model storage location: {dest}",
+                     f"this is inside {data_subdir}. Choose a separate data root such as "
+                     f"{ROOT.parent / 'Strata-data'}, not the models/packs/mtp folder itself. "
+                     "No files were moved by this attempt.")
+            # An older, interrupted migration may have made models/models/models/... . Do not silently
+            # migrate the damaged tree or try to recurse through it: its contents need inspection first.
+            nested = data_subdir / name
+            if nested.is_dir():
+                fail(f"nested storage directory found: {nested}",
+                     "A previous storage move may have been interrupted. Keep the files and inspect this "
+                     "directory before trying another migration; Strata has not changed it.")
 
 
 def other_installs(settings: dict) -> list:
@@ -814,6 +838,11 @@ def same_drive(a: Path, b: Path) -> bool:
 def move_into(src: Path, dst: Path) -> None:
     """A rename into the data folder (same drive: instant); a folder merges into one already there, keeping what the
     destination has.  Whatever cannot be moved (a file in use) stays where it is."""
+    if src.is_dir():
+        source, target = src.resolve(), dst.resolve()
+        if target == source or source in target.parents:
+            fail(f"unsafe storage migration from {src} to {dst}",
+                 "the destination is inside the source directory. No files were moved by this operation.")
     if not dst.exists():
         try:
             dst.parent.mkdir(parents=True, exist_ok=True)
@@ -872,6 +901,7 @@ def data_folder(requested: str | None) -> tuple:
     previous = [Path(p).expanduser().resolve() for p in
                 [settings.get("data_dir"), *settings.get("previous_data_dirs", [])] if p]
     retained = [p for p in dict.fromkeys(previous) if p != dest and has_data(p)]
+    validate_data_roots(dest, [ROOT, *other_installs(settings), *previous, dest])
     try:
         dest.mkdir(parents=True, exist_ok=True)
     except OSError as e:                                # e.g. no write access next to the Strata folder

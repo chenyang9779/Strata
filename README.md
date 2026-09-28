@@ -130,7 +130,9 @@ START-HERE.bat --data-dir "D:\Strata-data"
 ```
 
 The selected folder is remembered for subsequent runs and contains GGUF downloads, prepared packs and the draft
-layer. `--models-dir` separately overrides **only** the GGUF download folder. To change the destination of *future*
+layer. It must be a **data root**, not an existing `models`, `packs`, or `mtp` folder: for example, use
+`E:\\Strata-data`, not `E:\\Strata-main\\models`. Strata rejects overlapping locations instead of moving a folder
+into itself. `--models-dir` separately overrides **only** the GGUF download folder. To change the destination of *future*
 downloads after installation, run `SETUP.bat --data-dir "D:\Strata-data"` (Windows) or
 `./setup.sh --setup --data-dir "/mnt/ssd/Strata-data"` (Linux). Existing model files and configurations remain at
 their previous location and are reused; Strata does not silently copy or delete existing large files.

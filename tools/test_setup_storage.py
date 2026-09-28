@@ -57,6 +57,107 @@ class ModelStorageTests(unittest.TestCase):
                 self.assertEqual(selected_again, new)
                 self.assertIn(old, elsewhere_again)
 
+    def test_rejects_models_folder_as_data_root_before_any_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "Strata"
+            model_file = root / "models" / "IQ2_XS" / "original.gguf"
+            model_file.parent.mkdir(parents=True)
+            model_file.write_bytes(b"keep me")
+            settings_file = base / "config" / "settings.json"
+            with (patch.object(SETUP, "ROOT", root),
+                  patch.object(SETUP, "settings_path", return_value=settings_file),
+                  patch.object(SETUP, "other_installs", return_value=[])):
+                SETUP.save_settings({"data_dir": str(base / "Strata-data")})
+                original_settings = settings_file.read_bytes()
+                with self.assertRaises(SystemExit):
+                    SETUP.data_folder(str(root / "models"))
+                self.assertTrue(model_file.is_file())
+                self.assertFalse((root / "models" / "models").exists())
+                self.assertEqual(settings_file.read_bytes(), original_settings)
+
+    def test_rejects_descendant_of_models_folder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "Strata"
+            root.mkdir()
+            settings_file = base / "config" / "settings.json"
+            with (patch.object(SETUP, "ROOT", root),
+                  patch.object(SETUP, "settings_path", return_value=settings_file),
+                  patch.object(SETUP, "other_installs", return_value=[])):
+                with self.assertRaises(SystemExit):
+                    SETUP.data_folder(str(root / "models" / "other-folder"))
+                self.assertFalse((root / "models").exists())
+                self.assertFalse(settings_file.exists())
+
+    def test_rejects_models_folder_in_remembered_data_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "Strata"
+            root.mkdir()
+            old = base / "old-data"
+            model_file = old / "models" / "IQ2_XS" / "original.gguf"
+            model_file.parent.mkdir(parents=True)
+            model_file.write_bytes(b"keep me")
+            settings_file = base / "config" / "settings.json"
+            with (patch.object(SETUP, "ROOT", root),
+                  patch.object(SETUP, "settings_path", return_value=settings_file),
+                  patch.object(SETUP, "other_installs", return_value=[])):
+                SETUP.save_settings({"data_dir": str(old)})
+                with self.assertRaises(SystemExit):
+                    SETUP.data_folder(str(old / "models"))
+                self.assertTrue(model_file.is_file())
+                self.assertFalse((old / "models" / "models").exists())
+                self.assertEqual(SETUP.load_settings()["data_dir"], str(old))
+
+    def test_move_into_defensively_rejects_own_descendant(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "models"
+            original = source / "IQ2_XS" / "original.gguf"
+            original.parent.mkdir(parents=True)
+            original.write_bytes(b"keep me")
+            with self.assertRaises(SystemExit):
+                SETUP.move_into(source, source / "models")
+            self.assertTrue(original.is_file())
+            self.assertFalse((source / "models").exists())
+
+    def test_interrupted_nested_storage_is_not_automatically_migrated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "Strata"
+            nested = root / "models" / "models" / "IQ2_XS"
+            nested.mkdir(parents=True)
+            model_file = nested / "original.gguf"
+            model_file.write_bytes(b"keep me")
+            new_root = base / "Strata-data"
+            settings_file = base / "config" / "settings.json"
+            with (patch.object(SETUP, "ROOT", root),
+                  patch.object(SETUP, "settings_path", return_value=settings_file),
+                  patch.object(SETUP, "other_installs", return_value=[])):
+                with self.assertRaises(SystemExit):
+                    SETUP.data_folder(str(new_root))
+                self.assertTrue(model_file.is_file())
+                self.assertFalse(new_root.exists())
+                self.assertFalse(settings_file.exists())
+
+    def test_valid_sibling_folder_can_receive_legacy_data(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "Strata"
+            original = root / "models" / "IQ2_XS" / "original.gguf"
+            original.parent.mkdir(parents=True)
+            original.write_bytes(b"keep me")
+            new_root = base / "Strata-data"
+            settings_file = base / "config" / "settings.json"
+            with (patch.object(SETUP, "ROOT", root),
+                  patch.object(SETUP, "settings_path", return_value=settings_file),
+                  patch.object(SETUP, "other_installs", return_value=[])):
+                dest, elsewhere = SETUP.data_folder(str(new_root))
+                self.assertEqual(dest, new_root)
+                self.assertEqual(elsewhere, [])
+                self.assertTrue((new_root / "models" / "IQ2_XS" / "original.gguf").is_file())
+                self.assertFalse(original.exists())
+
 
 if __name__ == "__main__":
     unittest.main()
