@@ -125,6 +125,9 @@ class StateTests(unittest.TestCase):
 
     def test_summary_defaults(self):
         self.assertEqual(runtime.metrics_summary({})["state"], "unknown")
+        self.assertEqual(runtime.metrics_summary({"live": {"queued": "N/A", "tok_s": "invalid"}})["queue"], 0)
+        with self.assertRaises(runtime.APIError):
+            runtime.metrics_summary([])
         result = runtime.metrics_summary({"engine": {"model": "test"}, "live":
                                           {"queued": 2, "tok_s": 32.5},
                                           "totals": {"requests": 4}})
