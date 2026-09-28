@@ -1,6 +1,7 @@
 """Native Windows manager for Strata. Uses the existing installer and inference server."""
 from __future__ import annotations
 
+import json
 import os
 import queue
 import secrets
@@ -8,6 +9,8 @@ import subprocess
 import sys
 import threading
 import webbrowser
+import urllib.error
+import urllib.request
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -52,6 +55,9 @@ class Desktop(tk.Tk):
         self.pending_runtime = None
         self.model_files = {}
         self.selected_path = None
+        self.chat_history = []
+        self.chat_busy = False
+        self.metrics_busy = False
         self.prefs_path = core.user_dir() / "desktop.json"
         self.prefs = core.read_json(self.prefs_path)
         self.root_dir = locate_root(str(self.prefs.get("root", "")))
@@ -92,6 +98,7 @@ class Desktop(tk.Tk):
         self.family.trace_add("write", self._family_changed)
         self.refresh_models()
         self.after(120, self._poll)
+        self.after(5000, self._metrics_timer)
 
     def _save_prefs(self):
         self.prefs["root"] = str(self.root_dir)
@@ -150,14 +157,20 @@ class Desktop(tk.Tk):
         models = ttk.Frame(self.tabs, padding=16)
         engine = ttk.Frame(self.tabs, padding=16)
         api = ttk.Frame(self.tabs, padding=16)
+        chat = ttk.Frame(self.tabs, padding=16)
+        monitor = ttk.Frame(self.tabs, padding=16)
         logs = ttk.Frame(self.tabs, padding=16)
         self.tabs.add(models, text="Models")
         self.tabs.add(engine, text="Engine")
         self.tabs.add(api, text="API & Tools")
+        self.tabs.add(chat, text="Chat")
+        self.tabs.add(monitor, text="Monitor")
         self.tabs.add(logs, text="Activity")
         self._models_tab(models)
         self._engine_tab(engine)
         self._api_tab(api)
+        self._chat_tab(chat)
+        self._monitor_tab(monitor)
         self._logs_tab(logs)
         self._set_busy(False)
 
@@ -257,6 +270,53 @@ class Desktop(tk.Tk):
         self.save_api_button = ttk.Button(tools, text="Save API settings to selected model",
                                            command=self.save_selected)
         self.save_api_button.grid(row=3, column=1, sticky="e", pady=10)
+
+    def _chat_tab(self, parent):
+        bar = ttk.Frame(parent)
+        bar.pack(fill="x", pady=(0, 10))
+        ttk.Label(bar, text="Quick Chat  /  OpenAI-compatible API",
+                  font=("Segoe UI Semibold", 12)).pack(side="left")
+        ttk.Button(bar, text="Open full browser Chat", command=self.open_chat).pack(side="right")
+        ttk.Button(bar, text="New conversation", command=self.new_chat).pack(side="right", padx=8)
+        viewer = ttk.Frame(parent)
+        viewer.pack(fill="both", expand=True)
+        scroll = ttk.Scrollbar(viewer)
+        scroll.pack(side="right", fill="y")
+        self.chat_view = tk.Text(viewer, background=LOG_BG, foreground=TEXT, state="disabled",
+                                 wrap="word", font=("Segoe UI", 10), padx=14, pady=14,
+                                 highlightthickness=0, relief="flat", yscrollcommand=scroll.set)
+        self.chat_view.pack(fill="both", expand=True)
+        self.chat_view.tag_configure("role", foreground=ACCENT, font=("Segoe UI Semibold", 10))
+        scroll.configure(command=self.chat_view.yview)
+        entry = ttk.Frame(parent)
+        entry.pack(fill="x", pady=(12, 0))
+        self.chat_input = tk.Text(entry, height=3, wrap="word", background=FIELD,
+                                  foreground=TEXT, insertbackground=TEXT, font=("Segoe UI", 10),
+                                  relief="flat", padx=10, pady=8)
+        self.chat_input.pack(side="left", fill="both", expand=True)
+        self.chat_input.bind("<Control-Return>", lambda _event: self.send_chat())
+        self.chat_send = ttk.Button(entry, text="Send", style="Accent.TButton", command=self.send_chat)
+        self.chat_send.pack(side="right", padx=(10, 0))
+        ttk.Label(parent, text="Ctrl+Enter sends. For image uploads, tools and advanced chat controls, use the browser Chat.",
+                  foreground=MUTED).pack(anchor="w", pady=(8, 0))
+
+    def _monitor_tab(self, parent):
+        bar = ttk.Frame(parent)
+        bar.pack(fill="x", pady=(0, 10))
+        ttk.Label(bar, text="Live engine and hardware metrics",
+                  font=("Segoe UI Semibold", 12)).pack(side="left")
+        ttk.Button(bar, text="Open full Monitor", command=self.open_chat).pack(side="right")
+        ttk.Button(bar, text="Refresh", command=self.fetch_metrics).pack(side="right", padx=8)
+        outer = ttk.Frame(parent)
+        outer.pack(fill="both", expand=True)
+        scroll = ttk.Scrollbar(outer)
+        scroll.pack(side="right", fill="y")
+        self.metrics_view = tk.Text(outer, background=LOG_BG, foreground="#cce7f2",
+                                    font=("Consolas", 10), wrap="word", relief="flat",
+                                    highlightthickness=0, padx=14, pady=14, yscrollcommand=scroll.set)
+        self.metrics_view.pack(fill="both", expand=True)
+        self.metrics_view.insert("end", "Start a model to view live metrics.\n")
+        scroll.config(command=self.metrics_view.yview)
 
     def _logs_tab(self, parent):
         row = ttk.Frame(parent)
@@ -434,7 +494,7 @@ class Desktop(tk.Tk):
         self.operation = kind
         self.status.set({"setup": "Preparing model", "calibration": "Calibrating", "server": "Starting"}[kind])
         self._set_busy(True)
-        self.tabs.select(3)
+        self.tabs.select(5)
         threading.Thread(target=self._worker, args=(kind, command, bootstrap), daemon=True).start()
 
     def _worker(self, kind, command, bootstrap):
@@ -486,6 +546,22 @@ class Desktop(tk.Tk):
                     self._log(event[1])
                 elif event[0] == "ready":
                     self.status.set("Running")
+                    self.fetch_metrics()
+                elif event[0] == "chat":
+                    self.chat_busy = False
+                    self.chat_send.configure(state="normal")
+                    answer = event[1]
+                    if event[2]:
+                        self.chat_history.append({"role": "assistant", "content": answer})
+                        self._chat_append("Strata", answer)
+                    else:
+                        if self.chat_history and self.chat_history[-1]["role"] == "user":
+                            self.chat_history.pop()
+                        self._chat_append("Error", answer)
+                elif event[0] == "metrics":
+                    self.metrics_busy = False
+                    self.metrics_view.delete("1.0", "end")
+                    self.metrics_view.insert("end", event[1])
                 elif event[0] == "finished":
                     kind, code = event[1:]
                     self.operation = ""
@@ -508,6 +584,90 @@ class Desktop(tk.Tk):
             pass
         if self.winfo_exists():
             self.after(120, self._poll)
+
+    def _chat_append(self, role, content):
+        self.chat_view.configure(state="normal")
+        self.chat_view.insert("end", role + "\n", "role")
+        self.chat_view.insert("end", str(content) + "\n\n")
+        self.chat_view.configure(state="disabled")
+        self.chat_view.see("end")
+
+    def new_chat(self):
+        if self.chat_busy:
+            messagebox.showinfo("Chat in progress", "Wait for the current response before clearing the conversation.")
+            return
+        self.chat_history.clear()
+        self.chat_view.configure(state="normal")
+        self.chat_view.delete("1.0", "end")
+        self.chat_view.configure(state="disabled")
+
+    def _api_request(self, url, payload=None, timeout=30):
+        cfg = core.read_json(self.selected_path) if self.selected_path else {}
+        headers = {"Accept": "application/json"}
+        if cfg.get("api_key"):
+            headers["Authorization"] = "Bearer " + cfg["api_key"]
+        data = None
+        if payload is not None:
+            headers["Content-Type"] = "application/json"
+            data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        request = urllib.request.Request(url, data=data, headers=headers)
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def send_chat(self):
+        if self.chat_busy:
+            return
+        if self.operation != "server" or self.status.get() != "Running" or not self.selected_path:
+            messagebox.showinfo("Start a model", "Start the selected model before using Quick Chat.")
+            return
+        prompt = self.chat_input.get("1.0", "end-1c").strip()
+        if not prompt:
+            return
+        cfg = core.read_json(self.selected_path)
+        self.chat_history.append({"role": "user", "content": prompt})
+        history = [dict(msg) for msg in self.chat_history]
+        self.chat_input.delete("1.0", "end")
+        self._chat_append("You", prompt)
+        self.chat_busy = True
+        self.chat_send.configure(state="disabled")
+        threading.Thread(target=self._chat_worker, args=(cfg, history), daemon=True).start()
+
+    def _chat_worker(self, cfg, history):
+        try:
+            result = self._api_request(core.local_url(cfg) + "/v1/chat/completions",
+                                       {"model": cfg["model_name"], "messages": history,
+                                        "max_tokens": 2048, "stream": False}, timeout=900)
+            content = result["choices"][0]["message"].get("content") or ""
+            self.events.put(("chat", str(content), True))
+        except (OSError, ValueError, KeyError, IndexError) as exc:
+            self.events.put(("chat", str(exc), False))
+
+    def fetch_metrics(self):
+        if self.metrics_busy or self.operation != "server" or self.status.get() != "Running" or not self.selected_path:
+            return
+        self.metrics_busy = True
+        cfg = core.read_json(self.selected_path)
+        threading.Thread(target=self._metrics_worker, args=(cfg,), daemon=True).start()
+
+    def _metrics_worker(self, cfg):
+        try:
+            data = self._api_request(core.local_url(cfg) + "/metrics", timeout=8)
+            live = data.get("live") or {}
+            engine = data.get("engine") or {}
+            totals = data.get("totals") or {}
+            lines = ["MODEL", json.dumps(engine, indent=2), "", "LIVE",
+                     json.dumps(live, indent=2), "", "TOTALS",
+                     json.dumps(totals, indent=2), "", "HARDWARE",
+                     json.dumps(data.get("hardware") or {}, indent=2)]
+            self.events.put(("metrics", "\n".join(lines)))
+        except (OSError, ValueError) as exc:
+            self.events.put(("metrics", "Metrics unavailable: " + str(exc)))
+
+    def _metrics_timer(self):
+        if self.winfo_exists():
+            if self.tabs.index(self.tabs.select()) == 4:
+                self.fetch_metrics()
+            self.after(5000, self._metrics_timer)
 
     def _set_busy(self, busy):
         state = "disabled" if busy else "normal"
