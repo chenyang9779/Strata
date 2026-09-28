@@ -55,6 +55,7 @@ class Desktop(tk.Tk):
         self.pending_runtime = None
         self.model_files = {}
         self.selected_path = None
+        self.active_config_path = None
         self.chat_history = []
         self.chat_busy = False
         self.metrics_busy = False
@@ -233,7 +234,7 @@ class Desktop(tk.Tk):
         self._field(engine, 1, "CPU expert workers (0 = auto)", self.cpu_workers)
         self._field(engine, 2, "Vision encoder threads (0 = auto)", self.vision_threads)
         self._field(engine, 3, "Expert cache slots", self.expert_cache,
-                    ["auto", "0", "1024", "2048", "4096", "8192"])
+                    ["auto", "1024", "2048", "4096", "8192"])
         self._field(engine, 4, "Prefill chunk", self.prefill,
                     ["auto", "512", "1024", "2048", "4096", "8192"])
         ttk.Label(engine, text="Concurrent generations: 1 (engine limit). Additional API requests queue; CPU workers are separate.",
@@ -441,6 +442,8 @@ class Desktop(tk.Tk):
         if self.operation:
             return
         try:
+            if not self.data_root.get().strip():
+                raise ValueError("Choose a data ROOT folder.")
             values = self._runtime_values()
             self._validate_runtime(values)
             cfg_path = core.model_config_path(self.root_dir, self.family.get(), self.model.get())
@@ -488,6 +491,7 @@ class Desktop(tk.Tk):
         except (ValueError, OSError) as e:
             messagebox.showerror("Cannot start", str(e))
             return
+        self.active_config_path = self.selected_path
         self._start_operation("server", command)
 
     def _start_operation(self, kind, command, bootstrap=False):
@@ -568,6 +572,8 @@ class Desktop(tk.Tk):
                     self._set_busy(False)
                     self.status.set("Stopped" if code == 0 else f"{kind} exited ({code})")
                     self._log(f"{kind} exited with status {code}.")
+                    if kind == "server":
+                        self.active_config_path = None
                     if kind == "setup" and code == 0 and self.pending_config:
                         try:
                             core.apply_runtime(self.pending_config, **self.pending_runtime)
@@ -601,11 +607,10 @@ class Desktop(tk.Tk):
         self.chat_view.delete("1.0", "end")
         self.chat_view.configure(state="disabled")
 
-    def _api_request(self, url, payload=None, timeout=30):
-        cfg = core.read_json(self.selected_path) if self.selected_path else {}
+    def _api_request(self, url, payload=None, timeout=30, api_key=""):
         headers = {"Accept": "application/json"}
-        if cfg.get("api_key"):
-            headers["Authorization"] = "Bearer " + cfg["api_key"]
+        if api_key:
+            headers["Authorization"] = "Bearer " + api_key
         data = None
         if payload is not None:
             headers["Content-Type"] = "application/json"
@@ -617,13 +622,13 @@ class Desktop(tk.Tk):
     def send_chat(self):
         if self.chat_busy:
             return
-        if self.operation != "server" or self.status.get() != "Running" or not self.selected_path:
-            messagebox.showinfo("Start a model", "Start the selected model before using Quick Chat.")
+        if self.operation != "server" or self.status.get() != "Running" or not self.active_config_path:
+            messagebox.showinfo("Start a model", "Start a model before using Quick Chat.")
             return
         prompt = self.chat_input.get("1.0", "end-1c").strip()
         if not prompt:
             return
-        cfg = core.read_json(self.selected_path)
+        cfg = core.read_json(self.active_config_path)
         self.chat_history.append({"role": "user", "content": prompt})
         history = [dict(msg) for msg in self.chat_history]
         self.chat_input.delete("1.0", "end")
@@ -636,22 +641,24 @@ class Desktop(tk.Tk):
         try:
             result = self._api_request(core.local_url(cfg) + "/v1/chat/completions",
                                        {"model": cfg["model_name"], "messages": history,
-                                        "max_tokens": 2048, "stream": False}, timeout=900)
+                                        "max_tokens": 2048, "stream": False}, timeout=900,
+                                       api_key=cfg.get("api_key", ""))
             content = result["choices"][0]["message"].get("content") or ""
             self.events.put(("chat", str(content), True))
         except (OSError, ValueError, KeyError, IndexError) as exc:
             self.events.put(("chat", str(exc), False))
 
     def fetch_metrics(self):
-        if self.metrics_busy or self.operation != "server" or self.status.get() != "Running" or not self.selected_path:
+        if self.metrics_busy or self.operation != "server" or self.status.get() != "Running" or not self.active_config_path:
             return
         self.metrics_busy = True
-        cfg = core.read_json(self.selected_path)
+        cfg = core.read_json(self.active_config_path)
         threading.Thread(target=self._metrics_worker, args=(cfg,), daemon=True).start()
 
     def _metrics_worker(self, cfg):
         try:
-            data = self._api_request(core.local_url(cfg) + "/metrics", timeout=8)
+            data = self._api_request(core.local_url(cfg) + "/metrics", timeout=8,
+                                     api_key=cfg.get("api_key", ""))
             live = data.get("live") or {}
             engine = data.get("engine") or {}
             totals = data.get("totals") or {}
