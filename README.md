@@ -115,6 +115,29 @@ is faster, larger is a bit smarter.
 Sizes, downloads and what fits where: [docs/MODELS.md](docs/MODELS.md). You can add another model later with
 `SETUP.bat` (Linux: `./setup.sh --setup`).
 
+### Changing the model or storage folder later
+
+Stop the running model first. To install a different family or size, double-click **`SETUP.bat`** on Windows
+(equivalent to `START-HERE.bat --setup`), or run **`./setup.sh --setup`** on Linux. Pick the new family and size.
+Previously installed models remain available: the next normal start shows a menu when more than one model is
+configured. Changing the model is a restart/setup operation, not a switch in an active chat.
+
+To choose a storage folder without the interactive question, pass `--data-dir`:
+
+```bat
+START-HERE.bat --data-dir "D:\Strata-data"
+```
+
+```sh
+./setup.sh --data-dir "/mnt/ssd/Strata-data"
+```
+
+The selected folder is remembered for subsequent runs and contains GGUF downloads, prepared packs and the draft
+layer. `--models-dir` separately overrides **only** the GGUF download folder. To change the destination of *future*
+downloads after installation, run `SETUP.bat --data-dir "D:\Strata-data"` (Windows) or
+`./setup.sh --setup --data-dir "/mnt/ssd/Strata-data"` (Linux). Existing model files and configurations remain at
+their previous location and are reused; Strata does not silently copy or delete existing large files.
+
 ## Using it
 
 <p align="center"><img src="docs/media/runpagoda.png" width="900" alt="The Strata app's Monitor tab next to a coding agent"><br>
