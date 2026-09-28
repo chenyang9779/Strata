@@ -135,6 +135,18 @@ downloads after installation, run `SETUP.bat --data-dir "D:\Strata-data"` (Windo
 `./setup.sh --setup --data-dir "/mnt/ssd/Strata-data"` (Linux). Existing model files and configurations remain at
 their previous location and are reused; Strata does not silently copy or delete existing large files.
 
+### Windows desktop manager
+
+Double-click **`DESKTOP.bat`** to open Strata's native Windows model and server manager. It supports model
+installation/selection, data storage, GPU and CPU expert workers, VRAM cache/prefill settings, API binding and key,
+Quick Chat, a live Monitor, logs and optional MCP tools. To package the GUI as a standalone Windows executable, run
+`BUILD-DESKTOP.bat` and keep the entire `dist\\StrataDesktop` directory together; the model and engine remain
+in the existing Strata installation. See [Desktop setup and controls](docs/DESKTOP.md).
+
+CPU worker parallelism is configurable; simultaneous model generations remain limited to **one**, with further
+HTTP requests queued by the current inference backend. Binding to `0.0.0.0` exposes the API on network interfaces,
+so the desktop manager requires an API key for it.
+
 ## Using it
 
 <p align="center"><img src="docs/media/runpagoda.png" width="900" alt="The Strata app's Monitor tab next to a coding agent"><br>
