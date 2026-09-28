@@ -791,6 +791,8 @@ class Desktop(tk.Tk):
                                 text=True, encoding="utf-8", errors="replace", bufsize=1,
                                 creationflags=flags)
         self.proc = proc
+        if self.stop_requested.is_set():
+            self._terminate_tree(proc)
         try:
             for line in proc.stdout:
                 self.events.put(("line", token, line.rstrip("\r\n")))
@@ -1077,75 +1079,106 @@ class Desktop(tk.Tk):
             self.current_activity.set("Activity exported")
 
 
-    def _set_busy(self, busy):
-        state = "disabled" if busy else "normal"
-        self.start_button.configure(state=state)
-        self.install_button.configure(state=state)
-        self.save_engine_button.configure(state=state)
-        self.save_api_button.configure(state=state)
-        self.calibrate_button.configure(state=state)
-        self.stop_button.configure(state="normal" if busy else "disabled")
+    def _set_busy(self, _busy):
+        busy = self.machine.busy
+        selected = self.selected_path is not None
+        self.start_button.configure(state="disabled" if busy or not selected else "normal")
+        self.install_button.configure(state="disabled" if busy else "normal")
+        self.save_engine_button.configure(state="disabled" if busy or not selected else "normal")
+        self.save_api_button.configure(state="disabled" if busy or not selected else "normal")
+        self.calibrate_button.configure(state="disabled" if busy or not selected else "normal")
+        self.stop_button.configure(state="normal" if busy and
+                                   self.machine.state != runtime.RunState.STOPPING else "disabled")
+        self.chat_send.configure(state="normal" if
+                                 runtime.can_send_chat(self.machine, self.active_config_path,
+                                                       self.chat_busy) else "disabled")
+        self.chat_stop.configure(state="normal" if self.chat_busy else "disabled")
 
     def stop_server(self):
-        if not self.proc:
+        if not self.machine.busy or self.machine.state == runtime.RunState.STOPPING:
             return
-        if self.operation == "setup" and not messagebox.askyesno(
-                "Cancel setup", "Stop the installer? Any completed downloads are kept."):
+        questions = {
+            "setup": ("Cancel installation?", "Stop preparing this model? Completed downloads are retained."),
+            "calibration": ("Stop calibration?", "Interrupt tuning the selected model?"),
+            "server": ("Stop model?", "Stop the server and interrupt its active API requests?"),
+        }
+        title, question = questions.get(self.operation, ("Stop operation?", "Stop the active operation?"))
+        if not messagebox.askyesno(title, question):
             return
-        if self.operation == "calibration" and not messagebox.askyesno(
-                "Stop calibration", "Interrupt calibration now?"):
+        self.machine.stopping()
+        self.stop_requested.set()
+        self.status.set("STOPPING")
+        self.side_status.configure(fg=WARNING)
+        self.current_activity.set("Stopping supervised process...")
+        self.cancel_chat(silent=True)
+        self._set_busy(True)
+        if self.proc is not None:
+            threading.Thread(target=self._terminate_tree, args=(self.proc,),
+                             daemon=True, name="strata-stop").start()
+
+    @staticmethod
+    def _terminate_tree(proc):
+        if proc.poll() is not None:
             return
-        if self.operation == "server" and not messagebox.askyesno(
-                "Stop server", "Stop the model and interrupt current API requests?"):
-            return
-        proc = self.proc
-        self._log("Stopping process tree ...")
         if os.name == "nt":
             try:
-                subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-                               capture_output=True, timeout=15,
-                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                result = subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                                        capture_output=True, timeout=15, check=False,
+                                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                if result.returncode == 0:
+                    return
             except (OSError, subprocess.TimeoutExpired):
-                proc.terminate()
-        else:
-            proc.terminate()
+                pass
+        if proc.poll() is None:
+            try:
+                proc.kill()
+            except OSError:
+                pass
 
     def open_chat(self):
-        port = self.port.get().strip()
-        if port.isdigit() and 1 <= int(port) <= 65535:
-            webbrowser.open(f"http://127.0.0.1:{port}/")
-        else:
-            messagebox.showerror("Invalid port", "Choose a port between 1 and 65535.")
+        self._open_web("")
+
+    def open_monitor(self):
+        self._open_web("#monitor")
+
+    def _open_web(self, suffix):
+        config = self.active_config if self.machine.server and self.active_config else (
+            core.read_json(self.selected_path) if self.selected_path else {})
+        try:
+            webbrowser.open(core.local_url(config) + "/" + suffix)
+        except (TypeError, ValueError, OSError) as exc:
+            messagebox.showerror("Invalid model port", str(exc))
 
     def copy_url(self):
         self.clipboard_clear()
         self.clipboard_append(self.endpoint.get())
+        self.current_activity.set("API URL copied to clipboard")
 
     def copy_key(self):
+        if not self.api_key.get().strip():
+            messagebox.showinfo("No API key", "Generate or enter a key first.")
+            return
         self.clipboard_clear()
         self.clipboard_append(self.api_key.get())
+        self.current_activity.set("API key copied to clipboard")
 
     def close_app(self):
-        if self.operation and self.proc:
-            if not messagebox.askyesno("Quit Strata Desktop", "A process is running. Stop it and quit?"):
+        if self.machine.busy:
+            if not messagebox.askyesno("Exit Strata Desktop",
+                                       "An operation is active. Stop the supervised process and close the app?"):
                 return
-            self.stop_server_on_exit()
-        self._save_prefs()
+            self.stop_requested.set()
+            self.chat_cancel.set()
+            if self.proc is not None:
+                self._terminate_tree(self.proc)
+        try:
+            self._save_prefs()
+        except OSError as exc:
+            if not messagebox.askyesno("Cannot save preferences",
+                                       f"{exc}\nExit without saving desktop preferences?"):
+                return
+        self._closing = True
         self.destroy()
-
-    def stop_server_on_exit(self):
-        proc = self.proc
-        if proc and proc.poll() is None:
-            if os.name == "nt":
-                try:
-                    subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-                                   capture_output=True, timeout=15,
-                                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-                except (OSError, subprocess.TimeoutExpired):
-                    proc.terminate()
-            else:
-                proc.terminate()
-
 
 if __name__ == "__main__":
     if os.name != "nt":
