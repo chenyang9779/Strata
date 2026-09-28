@@ -156,7 +156,7 @@ def apply_runtime(path: Path, *, host: str, port: str | int, api_key: str, gpu: 
     config["args"] = args
     config["host"] = host
     config["port"] = p
-    config["api_key"] = api_key
+    config["api_key"] = api_key.strip()
     config["fit_max_tokens"] = bool(fit_max_tokens)
     if device is None:
         config.pop("gpu", None)
