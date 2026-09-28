@@ -757,6 +757,8 @@ def choose_data_dir(default: Path) -> str:
     """Ask for model storage before any downloads. Enter retains the remembered/default location."""
     say()
     say("  Model storage: downloads, prepared packs and the draft layer use about 70-120 GB.")
+    say("  Choose a DATA ROOT: Strata creates models/, packs/ and mtp/ below it.")
+    say("  Do not select an existing models/, packs/ or mtp/ folder.")
     say("  Choose a folder on a drive with enough free space, or press Enter to keep this location.")
     while True:
         try:
