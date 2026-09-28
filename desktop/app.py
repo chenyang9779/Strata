@@ -53,6 +53,7 @@ class Desktop(tk.Tk):
         self.geometry("1240x850")
         self.minsize(990, 685)
         self.configure(background=BG)
+        self._install_icon()
         self.protocol("WM_DELETE_WINDOW", self.close_app)
         self.events = queue.Queue()
         self.proc = None
@@ -133,6 +134,15 @@ class Desktop(tk.Tk):
             self.prefs["last_selected"] = str(self.selected_path)
         self.prefs["mcp_file"] = self.mcp_file.get() if hasattr(self, "mcp_file") else self.prefs.get("mcp_file", "")
         core.atomic_json(self.prefs_path, self.prefs)
+
+    def _install_icon(self):
+        logo = tk.PhotoImage(width=32, height=32)
+        logo.put(NAV, to=(0, 0, 32, 32))
+        logo.put(ACCENT, to=(5, 6, 27, 11))
+        logo.put("#94eee0", to=(8, 13, 24, 18))
+        logo.put(PURPLE, to=(11, 20, 21, 25))
+        self.iconphoto(True, logo)
+        self._icon = logo
 
     def _theme(self):
         style = ttk.Style(self)
@@ -266,6 +276,9 @@ class Desktop(tk.Tk):
                  font=("Segoe UI Semibold", 8)).pack(side="right")
         self._page_index = 0
         self.bind_all("<MouseWheel>", self._wheel_page, add="+")
+        for number in range(6):
+            self.bind_all(f"<Control-Key-{number + 1}>",
+                          lambda _event, index=number: self._show_page(index), add="+")
         self._show_page(0)
         self._set_busy(False)
 
@@ -1248,4 +1261,9 @@ class Desktop(tk.Tk):
 if __name__ == "__main__":
     if os.name != "nt":
         raise SystemExit("Strata Desktop is a Windows app. Use ./setup.sh on Linux.")
+    try:
+        import ctypes
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    except (AttributeError, OSError, ValueError):
+        pass
     Desktop().mainloop()
