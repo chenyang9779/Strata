@@ -76,6 +76,13 @@ class DesktopCoreTests(unittest.TestCase):
         self.assertEqual(core.validate_runtime(
             "0.0.0.0", "9000", "private-key", "1", "6", "4", "4096", "2048"), (9000, 6, 4, 1))
 
+    def test_api_network_addresses_only_on_all_interfaces(self):
+        self.assertEqual(core.lan_urls({"host": "127.0.0.1", "port": 9000},
+                                       ["192.168.1.20"]), [])
+        self.assertEqual(core.lan_urls({"host": "0.0.0.0", "port": 9000},
+                                       ["192.168.1.20", "10.0.0.5"]),
+                         ["http://192.168.1.20:9000/v1", "http://10.0.0.5:9000/v1"])
+
     def test_zero_expert_cache_is_rejected_with_default_speculative_engine(self):
         with self.assertRaisesRegex(ValueError, "positive slot count"):
             core.validate_runtime("127.0.0.1", "8080", "", "Auto", "0", "0", "0", "auto")
