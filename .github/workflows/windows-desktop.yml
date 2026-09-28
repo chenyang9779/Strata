@@ -1,15 +1,26 @@
 name: Windows Desktop
 
 on:
+  workflow_dispatch:
   push:
     branches:
+      - main
       - feature/windows-desktop-manager-20260928
+    paths:
+      - "desktop/**"
+      - "DESKTOP.bat"
+      - "BUILD-DESKTOP.bat"
+      - ".github/workflows/windows-desktop.yml"
   pull_request:
     paths:
       - "desktop/**"
       - "DESKTOP.bat"
       - "BUILD-DESKTOP.bat"
       - ".github/workflows/windows-desktop.yml"
+
+concurrency:
+  group: windows-desktop-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   windows-desktop:
