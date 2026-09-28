@@ -57,6 +57,7 @@ class Desktop(tk.Tk):
         self.events = queue.Queue()
         self.proc = None
         self.operation = ""
+        self._closing = False
         self.machine = runtime.RunState()
         self.stop_requested = threading.Event()
         self.pending_config = None
@@ -656,260 +657,425 @@ class Desktop(tk.Tk):
             "expert_cache", "prefill")))
 
     def save_selected(self):
-        if self.operation:
-            messagebox.showwarning("Server busy", "Stop the server or wait for setup to finish before changing configuration.")
+        if self.machine.busy:
+            messagebox.showwarning("Operation in progress",
+                                   "Stop the running operation before editing its saved configuration.")
             return False
         if not self.selected_path:
-            messagebox.showinfo("Select a model", "Choose an installed model first.")
+            messagebox.showinfo("Select a model", "Select an installed model first.")
             return False
         try:
-            values = self._runtime_values()
-            cfg = core.apply_runtime(self.selected_path, **values)
+            config = core.apply_runtime(self.selected_path, **self._runtime_values())
             self._save_prefs()
-            self.endpoint.set(core.local_url(cfg) + "/v1")
-            self._log(f"Saved settings: {self.selected_path.name}")
+            self.endpoint.set(core.local_url(config) + "/v1")
+            self.dirty = False
+            self.dirty_label.configure(text="")
+            self.current_activity.set("Configuration saved · changes apply on the next launch")
+            self._log("Saved model configuration: " + self.selected_path.name)
             return True
-        except (OSError, ValueError) as e:
-            messagebox.showerror("Invalid settings", str(e))
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("Invalid settings", str(exc))
             return False
 
     def install_model(self):
-        if self.operation:
+        if self.machine.busy:
             return
         try:
             if not self.data_root.get().strip():
-                raise ValueError("Choose a data ROOT folder.")
+                raise ValueError("Choose a data root folder, not an existing models/ directory.")
             values = self._runtime_values()
             self._validate_runtime(values)
-            cfg_path = core.model_config_path(self.root_dir, self.family.get(), self.model.get())
+            config_path = core.model_config_path(self.root_dir, self.family.get(), self.model.get())
             py = self.root_dir / ".venv" / "Scripts" / "python.exe"
-            command = core.setup_command(py, self.root_dir, family=self.family.get(),
-                model=self.model.get(), context=int(self.context.get()), kv=self.kv.get(),
-                vision=self.vision.get(), projection=self.projection.get(),
-                data_dir=Path(self.data_root.get()), gpu=self.gpu.get(),
-                gguf_dir=self.gguf_folder.get())
-        except (ValueError, OSError) as e:
-            messagebox.showerror("Invalid setup", str(e))
+            command = core.setup_command(
+                py, self.root_dir, family=self.family.get(), model=self.model.get(),
+                context=int(self.context.get()), kv=self.kv.get(), vision=self.vision.get(),
+                projection=self.projection.get(), data_dir=Path(self.data_root.get()),
+                gpu=self.gpu.get(), gguf_dir=self.gguf_folder.get())
+        except (ValueError, OSError) as exc:
+            messagebox.showerror("Invalid model setup", str(exc))
             return
-        if not messagebox.askyesno("Prepare model", "Install or reconfigure this model? Setup may download tens of GB. "
-                                  "Already completed downloads are reused."):
+        if not messagebox.askyesno(
+                "Prepare model",
+                "Prepare this configuration with Strata's existing installer?\n\n"
+                "It may download large model files. Existing completed downloads are reused, and "
+                "previous model configurations are retained."):
             return
-        self.pending_config, self.pending_runtime = cfg_path, values
+        self.pending_config = config_path
+        self.pending_runtime = values
         self._start_operation("setup", command, bootstrap=True)
 
     def calibrate(self):
-        if self.operation or not self.selected_path:
+        if self.machine.busy or not self.selected_path:
             return
         if not self.save_selected():
             return
-        if not messagebox.askyesno("Calibrate model", "Calibration may keep the PC busy for 5-10 minutes. Continue?"):
+        if not messagebox.askyesno("Calibrate model",
+                                   "Run hardware calibration for this selected model? "
+                                   "The configured model and engine will be used during tuning."):
             return
         py = self.root_dir / ".venv" / "Scripts" / "python.exe"
         if not py.exists():
-            messagebox.showerror("Python environment missing", "Install a model first.")
+            messagebox.showerror("Python environment missing", "Prepare a model first.")
             return
-        self._start_operation("calibration", [str(py), "-u", str(self.root_dir / "desktop" / "calibrate_selected.py"),
-                                               str(self.selected_path)])
+        self._start_operation("calibration", [
+            str(py), "-u", str(self.root_dir / "desktop" / "calibrate_selected.py"),
+            str(self.selected_path)])
 
     def start_server(self):
-        if self.operation or not self.selected_path:
+        if self.machine.busy or not self.selected_path:
             return
         if not self.save_selected():
             return
         py = self.root_dir / ".venv" / "Scripts" / "python.exe"
         if not py.exists():
-            messagebox.showerror("Python environment missing", "Install or prepare a model first.")
+            messagebox.showerror("Python environment missing", "Prepare a model first.")
             return
         try:
-            cfg = core.read_json(self.selected_path)
-            command = core.server_command(py, self.root_dir, self.selected_path, cfg, self.mcp_file.get())
-        except (ValueError, OSError) as e:
-            messagebox.showerror("Cannot start", str(e))
+            config = core.read_json(self.selected_path)
+            engine = Path(config["exe"])
+            if not engine.is_file():
+                raise ValueError("The configured engine is missing: " + str(engine) +
+                                 "\nPrepare this model again before starting.")
+            command = core.server_command(py, self.root_dir, self.selected_path,
+                                          config, self.mcp_file.get())
+        except (KeyError, ValueError, OSError) as exc:
+            messagebox.showerror("Cannot start model", str(exc))
             return
+        if self.active_config_path != self.selected_path:
+            self.new_chat()
         self.active_config_path = self.selected_path
+        self.active_config = config
+        self.active_model_text.set(config["model_name"])
         self._start_operation("server", command)
 
     def _start_operation(self, kind, command, bootstrap=False):
+        token = self.machine.begin(kind)
         self.operation = kind
-        self.status.set({"setup": "Preparing model", "calibration": "Calibrating", "server": "Starting"}[kind])
+        self.stop_requested.clear()
+        self.status.set({"setup": "INSTALLING", "calibration": "CALIBRATING",
+                         "server": "STARTING"}[kind])
+        self.side_status.configure(fg=WARNING)
+        self.current_activity.set({"setup": "Preparing selected model",
+                                   "calibration": "Calibrating the selected configuration",
+                                   "server": "Loading model into memory"}[kind])
         self._set_busy(True)
         self._show_page(5)
-        threading.Thread(target=self._worker, args=(kind, command, bootstrap), daemon=True).start()
+        threading.Thread(target=self._worker, args=(token, kind, command, bootstrap),
+                         daemon=True, name="strata-process").start()
 
-    def _worker(self, kind, command, bootstrap):
+    def _worker(self, token, kind, command, bootstrap):
         try:
             if bootstrap and not (self.root_dir / ".venv" / "Scripts" / "python.exe").exists():
                 bootstrap_cmd = [str(self.root_dir / "START-HERE.bat"), "--check"]
-                self.events.put(("line", "Bootstrapping Strata's Python environment ..."))
-                code = self._pipe(bootstrap_cmd)
-                if code != 0:
-                    self.events.put(("finished", kind, code))
+                self.events.put(("line", token, "Creating the Strata Python environment..."))
+                code = self._pipe(token, "bootstrap", bootstrap_cmd)
+                if code:
+                    self.events.put(("finished", token, kind, code))
                     return
-            code = self._pipe(command)
-            self.events.put(("finished", kind, code))
+            if self.stop_requested.is_set():
+                self.events.put(("finished", token, kind, 130))
+                return
+            code = self._pipe(token, kind, command)
+            self.events.put(("finished", token, kind, code))
         except Exception as exc:
-            self.events.put(("line", f"Process error: {exc}"))
-            self.events.put(("finished", kind, 1))
+            self.events.put(("line", token, "Process launch failed: " + str(exc)))
+            self.events.put(("finished", token, kind, 1))
 
-    def _pipe(self, command):
-        # Always pass an argument array: paths and user fields must not be interpreted by a shell.
+    def _pipe(self, token, kind, command):
+        if self.stop_requested.is_set():
+            return 130
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
-        p = subprocess.Popen(command, cwd=str(self.root_dir), stdin=subprocess.DEVNULL,
-                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                             encoding="utf-8", errors="replace", bufsize=1,
-                             creationflags=flags)
-        self.proc = p
+        proc = subprocess.Popen(command, cwd=str(self.root_dir), stdin=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, encoding="utf-8", errors="replace", bufsize=1,
+                                creationflags=flags)
+        self.proc = proc
         try:
-            for line in p.stdout:
-                line = line.rstrip("\r\n")
-                self.events.put(("line", line))
-                if line.startswith("ready: "):
-                    self.events.put(("ready",))
-            return p.wait()
+            for line in proc.stdout:
+                self.events.put(("line", token, line.rstrip("\r\n")))
+                if kind == "server" and line.startswith("ready: "):
+                    self.events.put(("ready", token))
+            return proc.wait()
         finally:
-            p.stdout.close()
-            if self.proc is p:
+            if proc.stdout:
+                proc.stdout.close()
+            if self.proc is proc:
                 self.proc = None
 
     def _log(self, line):
-        self.log_text.insert("end", line + "\n")
-        if int(self.log_text.index("end-1c").split(".")[0]) > 2200:
+        safe = runtime.redact(str(line), (self.api_key.get(),))
+        tag = ("log_error" if "error" in safe.lower() or "[X]" in safe or "traceback" in safe.lower()
+               else "log_ready" if "ready:" in safe or "[ok]" in safe else "")
+        self.log_text.insert("end", safe + "\n", tag)
+        if int(self.log_text.index("end-1c").split(".")[0]) > 2500:
             self.log_text.delete("1.0", "400.0")
         self.log_text.see("end")
 
     def _poll(self):
         try:
-            while True:
+            for _ in range(250):
                 event = self.events.get_nowait()
-                if event[0] == "line":
-                    self._log(event[1])
-                elif event[0] == "ready":
-                    self.status.set("Running")
-                    self.fetch_metrics()
-                elif event[0] == "chat":
-                    self.chat_busy = False
-                    self.chat_send.configure(state="normal")
-                    answer = event[1]
-                    if event[2]:
-                        self.chat_history.append({"role": "assistant", "content": answer})
-                        self._chat_append("Strata", answer)
-                    else:
-                        if self.chat_history and self.chat_history[-1]["role"] == "user":
-                            self.chat_history.pop()
-                        self._chat_append("Error", answer)
-                elif event[0] == "metrics":
-                    self.metrics_busy = False
-                    self.metrics_view.delete("1.0", "end")
-                    self.metrics_view.insert("end", event[1])
-                elif event[0] == "finished":
-                    kind, code = event[1:]
+                kind = event[0]
+                if kind == "line":
+                    if event[1] == self.machine.generation:
+                        self._log(event[2])
+                elif kind == "ready":
+                    if self.machine.ready(event[1]):
+                        self.status.set("ONLINE")
+                        self.side_status.configure(fg=SUCCESS)
+                        self.current_activity.set("Model online · " + core.local_url(self.active_config or {}))
+                        self.chat_status.set("Connected · replies stream as they are generated")
+                        self._set_busy(True)
+                        self.fetch_metrics()
+                elif kind == "finished":
+                    token, operation, code = event[1:]
+                    was_stopping = self.machine.state == runtime.RunState.STOPPING
+                    if not self.machine.finished(token):
+                        continue
                     self.operation = ""
-                    self._set_busy(False)
-                    self.status.set("Stopped" if code == 0 else f"{kind} exited ({code})")
-                    self._log(f"{kind} exited with status {code}.")
-                    if kind == "server":
+                    self._log(f"{operation} finished (exit code {code}).")
+                    self.status.set("OFFLINE" if code == 0 or was_stopping else "ERROR")
+                    self.side_status.configure(fg=MUTED if code == 0 or was_stopping else WARNING)
+                    self.current_activity.set(
+                        "Stopped" if was_stopping else
+                        "Model preparation complete" if operation == "setup" and code == 0 else
+                        "Operation complete" if code == 0 else
+                        "Operation failed · review Activity")
+                    if operation == "server":
+                        self.cancel_chat(silent=True)
                         self.active_config_path = None
-                    if kind == "setup" and code == 0 and self.pending_config:
+                        self.active_config = None
+                        self.active_model_text.set("No active model")
+                        self.monitor_state.set("OFFLINE")
+                        self.monitor_toks.set("0.0")
+                        self.monitor_queue.set("0")
+                        self.metrics_busy = False
+                        self.chat_status.set("Start a model to send messages")
+                    if operation == "setup" and code == 0 and self.pending_config:
                         try:
                             core.apply_runtime(self.pending_config, **self.pending_runtime)
-                            self._save_prefs()
+                            self.dirty = False
+                            self.dirty_label.configure(text="")
+                            self.data_root.set(str(core.current_data_root(self.root_dir)))
                             self.refresh_models(self.pending_config)
-                            self._log("Installed model selected. Start it from the top bar.")
-                        except (ValueError, OSError) as e:
-                            self._log(f"Model prepared, but desktop settings could not be saved: {e}")
-                    elif kind == "calibration" and code == 0:
+                            self._save_prefs()
+                            self._log("Model prepared and selected. Use Start model to serve it.")
+                        except (ValueError, OSError) as exc:
+                            self._log("Model prepared; could not apply desktop settings: " + str(exc))
+                    elif operation == "calibration" and code == 0:
+                        self.dirty = False
+                        self.dirty_label.configure(text="")
                         self.refresh_models(self.selected_path)
                     self.pending_config = None
                     self.pending_runtime = None
+                    self._set_busy(False)
+                elif kind == "chat_chunk":
+                    token, request_id, name, value = event[1:]
+                    if token != self.machine.generation or request_id != self.chat_request_id:
+                        continue
+                    if name == "content":
+                        self.partial_answer += value
+                        self._chat_text(value)
+                    elif name == "reasoning":
+                        self._chat_text(value, "thought")
+                    elif name == "finish":
+                        self.chat_status.set("Finish reason: " + value)
+                elif kind == "chat_done":
+                    token, request_id, success, detail = event[1:]
+                    if token != self.machine.generation or request_id != self.chat_request_id:
+                        continue
+                    self.chat_busy = False
+                    self.chat_stop.configure(state="disabled")
+                    if success:
+                        if self.partial_answer:
+                            self.chat_history.append({"role": "assistant", "content": self.partial_answer})
+                        else:
+                            if self.chat_history and self.chat_history[-1]["role"] == "user":
+                                self.chat_history.pop()
+                            self._chat_text("\n(No assistant text was returned.)")
+                        self._chat_text("\n\n")
+                        self.chat_status.set("Reply complete")
+                    else:
+                        if self.chat_history and self.chat_history[-1]["role"] == "user":
+                            self.chat_history.pop()
+                        self._chat_text("\n\n" + runtime.redact(detail, (self.api_key.get(),)) + "\n\n",
+                                        "error")
+                        self.chat_status.set("Request failed · see the error above")
+                    self._set_busy(self.machine.busy)
+                elif kind == "metrics":
+                    token, result, error = event[1:]
+                    if token != self.machine.generation:
+                        continue
+                    self.metrics_busy = False
+                    if error:
+                        self.metrics_view.delete("1.0", "end")
+                        self.metrics_view.insert("end", "Monitor unavailable: " +
+                                                 runtime.redact(error, (self.api_key.get(),)))
+                        continue
+                    summary = runtime.metrics_summary(result)
+                    self.monitor_state.set(summary["state"].upper())
+                    self.monitor_queue.set(str(summary["queue"]))
+                    self.monitor_toks.set(f'{summary["tok_s"]:.1f}')
+                    self.monitor_requests.set(str(summary["requests"]))
+                    sections = [
+                        ("ENGINE", result.get("engine") or {}),
+                        ("LIVE REQUEST", result.get("live") or {}),
+                        ("TOTALS", result.get("totals") or {}),
+                        ("HARDWARE", result.get("hardware") or {})]
+                    self.metrics_view.delete("1.0", "end")
+                    self.metrics_view.insert("end", "\n\n".join(
+                        title + "\n" + json.dumps(value, indent=2, ensure_ascii=False)
+                        for title, value in sections))
         except queue.Empty:
             pass
-        if self.winfo_exists():
-            self.after(120, self._poll)
+        if not getattr(self, "_closing", False):
+            self.after(90, self._poll)
 
-    def _chat_append(self, role, content):
+    def _chat_append(self, role, content=""):
         self.chat_view.configure(state="normal")
-        self.chat_view.insert("end", role + "\n", "role")
-        self.chat_view.insert("end", str(content) + "\n\n")
+        self.chat_view.insert("end", role.upper() + "\n", "role")
+        if content:
+            self.chat_view.insert("end", str(content))
+        self.chat_view.insert("end", "\n\n")
+        self.chat_view.configure(state="disabled")
+        self.chat_view.see("end")
+
+    def _chat_text(self, content, tag=""):
+        self.chat_view.configure(state="normal")
+        self.chat_view.insert("end", str(content), tag)
         self.chat_view.configure(state="disabled")
         self.chat_view.see("end")
 
     def new_chat(self):
         if self.chat_busy:
-            messagebox.showinfo("Chat in progress", "Wait for the current response before clearing the conversation.")
+            messagebox.showinfo("Reply in progress", "Cancel the current reply before clearing the conversation.")
             return
         self.chat_history.clear()
         self.chat_view.configure(state="normal")
         self.chat_view.delete("1.0", "end")
         self.chat_view.configure(state="disabled")
+        self.chat_status.set("New conversation")
 
-    def _api_request(self, url, payload=None, timeout=30, api_key=""):
+    def _api_request(self, url, timeout=8, api_key=""):
         headers = {"Accept": "application/json"}
         if api_key:
             headers["Authorization"] = "Bearer " + api_key
-        data = None
-        if payload is not None:
-            headers["Content-Type"] = "application/json"
-            data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        request = urllib.request.Request(url, data=data, headers=headers)
+        request = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8"))
 
     def send_chat(self):
-        if self.chat_busy:
-            return
-        if self.operation != "server" or self.status.get() != "Running" or not self.active_config_path:
-            messagebox.showinfo("Start a model", "Start a model before using Quick Chat.")
+        if not runtime.can_send_chat(self.machine, self.active_config_path, self.chat_busy):
+            messagebox.showinfo("Start a model", "Start the server and finish the previous reply first.")
             return
         prompt = self.chat_input.get("1.0", "end-1c").strip()
         if not prompt:
             return
-        cfg = core.read_json(self.active_config_path)
+        config = dict(self.active_config)
         self.chat_history.append({"role": "user", "content": prompt})
-        history = [dict(msg) for msg in self.chat_history]
+        history = [dict(message) for message in self.chat_history]
         self.chat_input.delete("1.0", "end")
         self._chat_append("You", prompt)
+        self._chat_text("STRATA\n", "role")
         self.chat_busy = True
-        self.chat_send.configure(state="disabled")
-        threading.Thread(target=self._chat_worker, args=(cfg, history), daemon=True).start()
+        self.partial_answer = ""
+        self.chat_cancel = threading.Event()
+        self.chat_request_id += 1
+        request_id = self.chat_request_id
+        self.chat_status.set("Generating · tokens stream as they arrive")
+        self._set_busy(True)
+        threading.Thread(target=self._chat_worker, args=(
+            self.machine.generation, request_id, config, history, self.chat_cancel),
+            daemon=True, name="strata-chat").start()
 
-    def _chat_worker(self, cfg, history):
+    def _chat_worker(self, token, request_id, config, history, cancel):
+        finish = ""
         try:
-            result = self._api_request(core.local_url(cfg) + "/v1/chat/completions",
-                                       {"model": cfg["model_name"], "messages": history,
-                                        "max_tokens": 2048, "stream": False}, timeout=900,
-                                       api_key=cfg.get("api_key", ""))
-            content = result["choices"][0]["message"].get("content") or ""
-            self.events.put(("chat", str(content), True))
-        except (OSError, ValueError, KeyError, IndexError) as exc:
-            self.events.put(("chat", str(exc), False))
+            request = runtime.chat_request(core.local_url(config), config.get("api_key", ""),
+                                           config["model_name"], history)
+            with urllib.request.urlopen(request, timeout=900) as response:
+                with self.chat_response_lock:
+                    self.chat_response = response
+                if cancel.is_set():
+                    return
+                for kind, value in runtime.openai_sse(response):
+                    if cancel.is_set():
+                        return
+                    if kind == "finish":
+                        finish = value
+                    self.events.put(("chat_chunk", token, request_id, kind, value))
+            self.events.put(("chat_done", token, request_id, True, finish))
+        except Exception as exc:
+            if not cancel.is_set():
+                self.events.put(("chat_done", token, request_id, False,
+                                 str(runtime.api_error(exc))))
+        finally:
+            with self.chat_response_lock:
+                self.chat_response = None
+
+    def cancel_chat(self, silent=False):
+        if not self.chat_busy:
+            return
+        self.chat_cancel.set()
+        self.chat_request_id += 1
+        with self.chat_response_lock:
+            response = self.chat_response
+        if response is not None:
+            threading.Thread(target=self._close_response, args=(response,),
+                             daemon=True, name="cancel-chat").start()
+        self.chat_busy = False
+        if self.chat_history and self.chat_history[-1]["role"] == "user":
+            self.chat_history.pop()
+        self._chat_text("\n\n[Response cancelled; partial output is not included in the conversation.]\n\n",
+                        "thought")
+        self.chat_status.set("Reply cancelled" if not silent else "Model stopped")
+        self.chat_stop.configure(state="disabled")
+        self._set_busy(self.machine.busy)
+
+    @staticmethod
+    def _close_response(response):
+        try:
+            response.close()
+        except OSError:
+            pass
 
     def fetch_metrics(self):
-        if self.metrics_busy or self.operation != "server" or self.status.get() != "Running" or not self.active_config_path:
+        if self.metrics_busy or self.machine.state != runtime.RunState.RUNNING or not self.active_config:
             return
         self.metrics_busy = True
-        cfg = core.read_json(self.active_config_path)
-        threading.Thread(target=self._metrics_worker, args=(cfg,), daemon=True).start()
+        config = dict(self.active_config)
+        token = self.machine.generation
+        threading.Thread(target=self._metrics_worker, args=(token, config),
+                         daemon=True, name="strata-metrics").start()
 
-    def _metrics_worker(self, cfg):
+    def _metrics_worker(self, token, config):
         try:
-            data = self._api_request(core.local_url(cfg) + "/metrics", timeout=8,
-                                     api_key=cfg.get("api_key", ""))
-            live = data.get("live") or {}
-            engine = data.get("engine") or {}
-            totals = data.get("totals") or {}
-            lines = ["MODEL", json.dumps(engine, indent=2), "", "LIVE",
-                     json.dumps(live, indent=2), "", "TOTALS",
-                     json.dumps(totals, indent=2), "", "HARDWARE",
-                     json.dumps(data.get("hardware") or {}, indent=2)]
-            self.events.put(("metrics", "\n".join(lines)))
-        except (OSError, ValueError) as exc:
-            self.events.put(("metrics", "Metrics unavailable: " + str(exc)))
+            result = self._api_request(core.local_url(config) + "/metrics",
+                                       api_key=config.get("api_key", ""))
+            self.events.put(("metrics", token, result, None))
+        except Exception as exc:
+            self.events.put(("metrics", token, None, str(runtime.api_error(exc))))
 
     def _metrics_timer(self):
-        if self.winfo_exists():
-            if self._page_index == 4:
-                self.fetch_metrics()
-            self.after(5000, self._metrics_timer)
+        if getattr(self, "_closing", False):
+            return
+        self.fetch_metrics()
+        self.after(5000, self._metrics_timer)
+
+    def export_log(self):
+        file = filedialog.asksaveasfilename(title="Export Strata activity",
+                                            defaultextension=".txt",
+                                            filetypes=[("Text log", "*.txt")])
+        if not file:
+            return
+        try:
+            Path(file).write_text(self.log_text.get("1.0", "end-1c"), encoding="utf-8")
+        except OSError as exc:
+            messagebox.showerror("Cannot export log", str(exc))
+        else:
+            self.current_activity.set("Activity exported")
+
 
     def _set_busy(self, busy):
         state = "disabled" if busy else "normal"
