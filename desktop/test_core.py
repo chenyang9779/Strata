@@ -119,6 +119,12 @@ class DesktopCoreTests(unittest.TestCase):
         self.assertEqual(reset["args"].count("--expert-cache"), 1)
         self.assertEqual(reset["args"].count("--prefill"), 1)
 
+    def test_api_key_is_trimmed_and_nonempty_for_lan(self):
+        path = self.config()
+        changed = core.apply_runtime(path, **self.runtime(
+            host="0.0.0.0", api_key="  this-is-a-key  "))
+        self.assertEqual(changed["api_key"], "this-is-a-key")
+
     def test_setup_command_uses_data_root_without_shell_and_existing_gguf(self):
         gguf = self.base / "GGUF"
         gguf.mkdir()
