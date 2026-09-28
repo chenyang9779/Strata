@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import os
+import socket
+import ipaddress
 import tempfile
 from pathlib import Path
 
@@ -219,3 +221,38 @@ def server_command(python: Path, root: Path, config_path: Path, config: dict,
 
 def local_url(config: dict) -> str:
     return f"http://127.0.0.1:{int(config.get('port', 8080))}"
+
+
+def lan_addresses() -> list[str]:
+    """Candidate LAN IPv4 addresses; does not transmit user data."""
+    preferred = None
+    addresses = set()
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("10.255.255.255", 1))
+            preferred = sock.getsockname()[0]
+    except OSError:
+        pass
+    try:
+        addresses.update(item[4][0] for item in
+                         socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET))
+    except OSError:
+        pass
+    def allowed(ip):
+        try:
+            address = ipaddress.ip_address(ip)
+            return (address.version == 4 and not address.is_loopback
+                    and not address.is_link_local and not address.is_unspecified
+                    and not address.is_multicast)
+        except ValueError:
+            return False
+    result = [preferred] if preferred and allowed(preferred) else []
+    return result + sorted(ip for ip in addresses if allowed(ip) and ip != preferred)
+
+
+def lan_urls(config: dict, addresses: list[str] | None = None) -> list[str]:
+    if config.get("host", "127.0.0.1") != "0.0.0.0":
+        return []
+    port = int(config.get("port", 8080))
+    ips = lan_addresses() if addresses is None else addresses
+    return [f"http://{ip}:{port}/v1" for ip in ips]
