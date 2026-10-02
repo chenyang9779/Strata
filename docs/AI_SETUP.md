@@ -77,8 +77,9 @@ By the PC's RAM (ask the user whether they mainly want it for code - then the Co
 `--family swift` (Swift 1.5, a fine-tune that thinks shorter; sizes Q2_0, IQ2_XS, IQ3_XXS) is the alternative to
 `qwen`. `--family orca --model IQ3_XXS` selects the experimental OrcaRouter Uncensored compatibility target:
 text-only, about 85.2 GB, 64 GB RAM or more recommended, and 32K is the validated context. Its Hugging Face repository
-is gated, so the user must first accept its access conditions and provide `HF_TOKEN` (or
-`HUGGING_FACE_HUB_TOKEN`) for the initial download. With `--yes` and no `--model`, setup picks the recommended
+is gated, so the user must first accept its access conditions. Interactive setup securely asks for the read token when
+the download is needed; unattended setup can provide `HF_TOKEN` (or `HUGGING_FACE_HUB_TOKEN`). The token is not
+saved by Strata. With `--yes` and no `--model`, setup picks the recommended
 size for the selected family itself. More: [MODELS.md](MODELS.md).
 
 ## 4. Run setup without questions
