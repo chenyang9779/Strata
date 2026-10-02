@@ -75,7 +75,11 @@ By the PC's RAM (ask the user whether they mainly want it for code - then the Co
 | 96 GB+ | `--family qwen --model IQ3_S` | `--family unsloth --model UD-Q4_K_XL` is experimental: NVIDIA only, NVMe SSD, 7-8.5 tokens/s on 64 GB |
 
 `--family swift` (Swift 1.5, a fine-tune that thinks shorter; sizes Q2_0, IQ2_XS, IQ3_XXS) is the alternative to
-`qwen`. With `--yes` and no `--model`, setup picks the recommended size for the RAM itself. More: [MODELS.md](MODELS.md).
+`qwen`. `--family orca --model IQ3_XXS` selects the experimental OrcaRouter Uncensored compatibility target:
+text-only, about 85.2 GB, 64 GB RAM or more recommended, and 32K is the validated context. Its Hugging Face repository
+is gated, so the user must first accept its access conditions and provide `HF_TOKEN` (or
+`HUGGING_FACE_HUB_TOKEN`) for the initial download. With `--yes` and no `--model`, setup picks the recommended
+size for the selected family itself. More: [MODELS.md](MODELS.md).
 
 ## 4. Run setup without questions
 
@@ -91,7 +95,7 @@ The flags (all of them: `START-HERE.bat --help`):
 | Flag | Meaning |
 | --- | --- |
 | `--yes` | take the recommended answer to every question (no prompts) |
-| `--family qwen\|swift\|coder\|unsloth` | the model version |
+| `--family qwen\|swift\|coder\|unsloth\|orca` | the model version |
 | `--model Q2_0\|IQ2_XS\|IQ3_XXS\|IQ3_S\|IQ1_M\|UD-Q4_K_XL` | the size (the Coder is IQ1_M, Unsloth UD-Q4_K_XL) |
 | `--context N` | context in tokens; default by VRAM: 32768 under 14 GB, 65536 under 20 GB, else 131072 |
 | `--vision yes\|no\|gpu\|cpu` | read pictures; `--yes` leaves images off. AMD cards: `cpu` |
