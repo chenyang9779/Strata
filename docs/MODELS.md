@@ -134,14 +134,16 @@ START-HERE.bat --setup --family unsloth --model UD-Q4_K_XL
 **49.8 GiB**, and setup recommends the validated **32K** context. Vision and the low-RAM mode are left off for this
 path because they were not part of the validation.
 
-The Hugging Face repository is gated. Accept its access conditions first, then set `HF_TOKEN` (or
-`HUGGING_FACE_HUB_TOKEN`) to a read token before the first download:
+The Hugging Face repository is gated. Accept its access conditions first. On the first download, interactive setup
+asks for a Hugging Face read token with hidden input and uses it only for that download; Strata does not save it.
+For unattended setup, set `HF_TOKEN` (or `HUGGING_FACE_HUB_TOKEN`) instead:
 
 ```
 START-HERE.bat --setup --family orca --model IQ3_XXS
 ```
 
-On Linux use `./setup.sh --setup --family orca --model IQ3_XXS`. Existing local shards can instead be supplied with
+On Linux use `./setup.sh --setup --family orca --model IQ3_XXS`. On Windows the normal interactive `SETUP.bat`
+flow prompts for the token when Orca needs to download. Existing local shards can instead be supplied with
 `--gguf-dir` without a token. The lower-level/manual workflow and validation details remain in [ORCA.md](ORCA.md).
 
 ## Adding or switching models
