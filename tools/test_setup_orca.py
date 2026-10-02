@@ -41,12 +41,35 @@ class OrcaSetupTests(unittest.TestCase):
         )
 
     def test_hugging_face_token_is_only_added_for_gated_family(self):
-        with patch.dict(os.environ, {"HF_TOKEN": "test-token"}, clear=False):
+        with patch.dict(os.environ, {"HF_TOKEN": "test-token"}, clear=False), \
+                patch.object(setup.getpass, "getpass") as hidden_prompt:
             self.assertEqual(
-                setup.hf_download_headers(setup.FAMILIES["orca"]),
+                setup.hf_download_headers(setup.FAMILIES["orca"], prompt=True),
                 {"Authorization": "Bearer test-token"},
             )
-            self.assertIsNone(setup.hf_download_headers(setup.FAMILIES["qwen"]))
+            hidden_prompt.assert_not_called()
+            self.assertIsNone(setup.hf_download_headers(setup.FAMILIES["qwen"], prompt=True))
+
+    def test_hugging_face_token_can_be_entered_at_hidden_prompt(self):
+        with patch.dict(os.environ, {}, clear=True), \
+                patch.object(setup.sys, "stdin") as stdin, \
+                patch.object(setup.getpass, "getpass", return_value="  hf-prompted-token  ") as hidden_prompt:
+            stdin.isatty.return_value = True
+            self.assertEqual(
+                setup.hf_download_headers(setup.FAMILIES["orca"], prompt=True),
+                {"Authorization": "Bearer hf-prompted-token"},
+            )
+            hidden_prompt.assert_called_once()
+            self.assertNotIn("HF_TOKEN", os.environ)
+            self.assertNotIn("HUGGING_FACE_HUB_TOKEN", os.environ)
+
+    def test_hugging_face_prompt_is_skipped_without_a_terminal(self):
+        with patch.dict(os.environ, {}, clear=True), \
+                patch.object(setup.sys, "stdin") as stdin, \
+                patch.object(setup.getpass, "getpass") as hidden_prompt:
+            stdin.isatty.return_value = False
+            self.assertIsNone(setup.hf_download_headers(setup.FAMILIES["orca"], prompt=True))
+            hidden_prompt.assert_not_called()
 
 
 if __name__ == "__main__":
