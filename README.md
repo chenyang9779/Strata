@@ -109,8 +109,9 @@ is faster, larger is a bit smarter.
   answer sooner, at about the same quality.
 - **[Unsloth UD-Q4_K_XL](docs/MODELS.md#unsloth-ud-q4_k_xl-experimental)** (experimental) - the closest to the full
   model, but most of it is read from the SSD while it answers: 7-8.5 tokens/s on a 64 GB PC.
-- **[OrcaRouter's Uncensored IQ3_XXS](docs/MODELS.md#orcarouter-uncensored-iq3_xxs)** - a manual setup, not in the
-  installer's menu.
+- **[OrcaRouter's Uncensored IQ3_XXS](docs/MODELS.md#orcarouter-uncensored-iq3_xxs)** (experimental) - available in
+  setup as `--family orca --model IQ3_XXS`. It is text-only in this path; its Hugging Face files are gated, so
+  accept the model's access conditions and set `HF_TOKEN` before the first download.
 
 Sizes, downloads and what fits where: [docs/MODELS.md](docs/MODELS.md). You can add another model later with
 `SETUP.bat` (Linux: `./setup.sh --setup`).

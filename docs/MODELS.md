@@ -128,8 +128,21 @@ START-HERE.bat --setup --family unsloth --model UD-Q4_K_XL
 
 ### OrcaRouter Uncensored IQ3_XXS
 
-For **OrcaRouter's Flash-Next Uncensored IQ3_XXS**, see the [manual compatibility setup](ORCA.md). It needs an
-explicit packing conversion and is not an installer menu option.
+**OrcaRouter's Flash-Next Uncensored IQ3_XXS** is an experimental fifth family in this fork's installer. Only
+`IQ3_XXS` is exposed because that is the compatibility path validated with Strata; setup performs the required
+`--compat-bf16` packing conversion automatically. The download is about **85.2 GB**, the expert arena is about
+**49.8 GiB**, and setup recommends the validated **32K** context. Vision and the low-RAM mode are left off for this
+path because they were not part of the validation.
+
+The Hugging Face repository is gated. Accept its access conditions first, then set `HF_TOKEN` (or
+`HUGGING_FACE_HUB_TOKEN`) to a read token before the first download:
+
+```
+START-HERE.bat --setup --family orca --model IQ3_XXS
+```
+
+On Linux use `./setup.sh --setup --family orca --model IQ3_XXS`. Existing local shards can instead be supplied with
+`--gguf-dir` without a token. The lower-level/manual workflow and validation details remain in [ORCA.md](ORCA.md).
 
 ## Adding or switching models
 

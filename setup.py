@@ -20,7 +20,7 @@ What the first run does (each step is skipped when it is already done):
   6. prepares the model for Strata and fetches the MTP draft layer (~5 GB, from the original Qwen checkpoint)
   7. writes run-<model>.bat / run-<model>.sh and starts the model
 
-Options: --family qwen|swift, --model Q2_0|IQ2_XS|IQ3_XXS|IQ3_S, --context 32768, --rope-scaling none|linear|yarn
+Options: --family qwen|swift|coder|unsloth|orca, --model Q2_0|IQ2_XS|IQ3_XXS|IQ3_S, --context 32768, --rope-scaling none|linear|yarn
 (--rope-scale F; past the trained 262144 the setup adds yarn and the factor is the final context over 262144,
 at least 1 - an explicit --rope-scaling none is refused for such a context), --vision yes|no|gpu|cpu, --port
 8080, --yes (recommended
@@ -66,6 +66,7 @@ HF_REVISIONS = {
     "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF": "b22d729eae29b5796f76fb70f91aef549b9fc52c",   # 2026-09-24
     "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF": "5348543e0147355ac9cbcb031184a3546350988e",  # 2026-09-29
     "unsloth/Qwen3.8-Flash-Next-GGUF": "38bb39ee97821de2c9009abb7e93950eec396e66",                   # 2026-09-30
+    "orcarouter/Qwen3.8-Flash-Next-Uncensored-GGUF": "738e7545a36d044084d53ceed2f8168cb13b1720",     # 2026-10-02
 }
 
 
@@ -77,6 +78,19 @@ def hf(repo: str) -> str:
 def hf_unpinned(url: str) -> str:
     """The same file at the repository's current revision (main)."""
     return re.sub(r"(https://huggingface\.co/.+?/resolve/)[0-9a-f]{40}/", r"\1main/", url, count=1)
+
+
+def hf_access_token() -> str | None:
+    """A Hugging Face token for gated model downloads, without ever storing it in Strata's config."""
+    return os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+
+
+def hf_download_headers(fam: dict) -> dict | None:
+    """Authorization header for a gated Hugging Face family, or None for public files / no token."""
+    if not fam.get("gated"):
+        return None
+    token = hf_access_token()
+    return {"Authorization": f"Bearer {token}"} if token else None
 
 
 HF = hf("ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF")
@@ -113,6 +127,12 @@ MODELS = {
     # the Coder release: 256 of the 512 experts kept (the ones code, tools and vision use), IQ2_S-IQ4_XS like IQ3_S
     "IQ1_M": {"about": "the Coder's only size: half the experts, stored like IQ3_S (3.5 bits)", "download_gb": 58.4,
               "ram_gb": 32, "arena_gb": 23.4, "families": ("coder",)},
+    # OrcaRouter's validated uncensored compatibility target. Keep separate metadata from the GSQ-RCO IQ3_XXS:
+    # the ordinary GGUF has a larger expert arena and an 85.2 GB two-shard download (docs/ORCA.md).
+    "ORCA_IQ3_XXS": {"label": "IQ3_XXS", "tag": "IQ3_XXS",
+                     "about": "OrcaRouter Uncensored IQ3_XXS (validated compatibility path)",
+                     "download_gb": 85.2, "ram_gb": 64, "arena_gb": 53.5, "families": ("orca",),
+                     "low_ram": False},
     # EXPERIMENTAL (docs/UNSLOTH_Q4.md): Unsloth's 4-bit file; its 77 GB of experts do not fit a 64 GB PC, so the engine
     # keeps a RAM budget of them (--resident-budget-gib, chosen below) and reads the rest from the GGUF on the SSD
     "UD-Q4_K_XL": {"about": "4-bit (Unsloth Dynamic), EXPERIMENTAL: the best quality, but most experts come from the "
@@ -163,6 +183,16 @@ FAMILIES = {
               "mmproj_hf": hf("ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF"),
               "mmproj": "mmproj-Qwen3.8-Flash-Next-BF16.gguf", "name": "qwen3.8-flash-next-coder",
               "profile": "expert-profile-coder.bin"},
+    # OrcaRouter's gated uncensored fine-tune. Only IQ3_XXS is exposed: that is the compatibility path validated
+    # in docs/ORCA.md. Its ordinary GGUF quantizes projections Strata reads as BF16, so packing expands those only.
+    "orca": {"title": "Qwen3.8-Flash-Next Uncensored", "by": "OrcaRouter (EXPERIMENTAL)",
+             "about": "uncensored IQ3_XXS; gated Hugging Face download; validated text-only compatibility path",
+             "hf": hf("orcarouter/Qwen3.8-Flash-Next-Uncensored-GGUF"),
+             "file": "Qwen3.8-Flash-Next-Uncensored-IQ3_XXS-0000{i}-of-00002.gguf", "tag": "orca-",
+             "mmproj_hf": hf("ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF"),
+             "mmproj": "mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+             "name": "orcarouter-qwen3.8-flash-next-uncensored", "experimental": True, "vision": False,
+             "pack_args": ["--compat-bf16"], "gated": True, "validated_context": 32768, "prefill": "512"},
     # EXPERIMENTAL: Unsloth's UD-Q4_K_XL of the original model (docs/UNSLOTH_Q4.md): four shards, no images yet
     "unsloth": {"title": "Qwen3.8-Flash-Next (Unsloth)", "by": "Unsloth's 4-bit quantization (EXPERIMENTAL)",
                 "about": "4-bit, 111 GB download, most experts read from the SSD: slow (7-8.5 tokens/s on a 64 GB PC)",
@@ -713,9 +743,10 @@ def drop_archive(z: Path) -> None:
     z.with_name(z.name + ".done").unlink(missing_ok=True)
 
 
-def download(url, dst: Path, what=None):
+def download(url, dst: Path, what=None, headers=None):
     """Resumable HTTP(S) download with a progress line; `file://` and plain paths are copied (tests, mirrors).
-    A finished file gets a <name>.done mark, so a later run skips it without asking the server."""
+    A finished file gets a <name>.done mark, so a later run skips it without asking the server.
+    Optional headers are used for authenticated downloads (for example a gated Hugging Face model)."""
     dst.parent.mkdir(parents=True, exist_ok=True)
     if dst.exists() and done(dst):
         ok(f"{what or dst.name} already downloaded")
@@ -729,13 +760,18 @@ def download(url, dst: Path, what=None):
         ok(f"{what or dst.name} copied")
         return
     part = dst.with_name(dst.name + ".part")
+    request_headers = {"User-Agent": "strata-setup", **(headers or {})}
     total = 0
     for attempt in range(5):
         try:
-            req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "strata-setup"})
+            req = urllib.request.Request(url, method="HEAD", headers=request_headers)
             total = int(urllib.request.urlopen(req, timeout=60).headers.get("Content-Length", 0))
             break
         except urllib.error.HTTPError as e:
+            if e.code in (401, 403) and "huggingface.co" in url:
+                fail(f"Hugging Face denied access to {what or dst.name} (HTTP {e.code})",
+                     "accept the model's access conditions on Hugging Face, then set HF_TOKEN (or "
+                     "HUGGING_FACE_HUB_TOKEN) to a token with read access and run setup again")
             if e.code == 404 and hf_unpinned(url) != url:  # #214: the pinned revision is gone from the repository
                 warn(f"{what or dst.name}: not at the pinned revision any more; downloading the repository's "
                      "current file")
@@ -755,7 +791,7 @@ def download(url, dst: Path, what=None):
     have = part.stat().st_size if part.exists() else 0
     for attempt in range(30):
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "strata-setup", "Range": f"bytes={have}-"})
+            req = urllib.request.Request(url, headers={**request_headers, "Range": f"bytes={have}-"})
             with urllib.request.urlopen(req, timeout=60) as r, open(part, "ab" if have else "wb") as f:
                 if have and r.status != 206:                     # the server ignored the range: start over
                     f.seek(0)
@@ -827,8 +863,9 @@ def gguf_dir_shards(folder: Path, fam: dict, model: str) -> list[Path]:
 GGUF_QUANT = re.compile(r"(?<![A-Za-z0-9])((?:UD-)?(?:I?Q\d+(?:_[A-Za-z0-9]+)*|BF16|F16|F32))"
                         r"(?=-\d{5}-of-\d{5}\.gguf$|\.gguf$)", re.I)
 SUPPORTED_GGUFS = ("Strata runs ISTA-DASLab's GSQ-RCO files (Qwen3.8-Flash-Next Q2_0, IQ2_XS, IQ3_XXS, IQ3_S; Swift "
-                   "1.5's; the Coder's IQ1_M) and Unsloth's UD-Q4_K_XL only: other GGUFs (Unsloth's UD-IQ3_XXS or "
-                   "UD-Q2_K_XL, K-quants) cannot be used")
+                   "1.5's; the Coder's IQ1_M), OrcaRouter's Uncensored IQ3_XXS compatibility target, and Unsloth's "
+                   "UD-Q4_K_XL only: other GGUFs (Unsloth's UD-IQ3_XXS or UD-Q2_K_XL, other Orca quantizations, "
+                   "K-quants) cannot be used")
 
 
 def gguf_unsupported(name: str) -> str | None:
@@ -2745,7 +2782,9 @@ def resolve_rope(ctx: int, scaling, scale, trained: int = 262144):
 # ------------------------------------------------------------------------------------------------ main
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--family", choices=list(FAMILIES), help="qwen = Qwen3.8-Flash-Next, swift = Swift 1.5")
+    ap.add_argument("--family", choices=list(FAMILIES),
+                    help="qwen = Qwen3.8-Flash-Next, swift = Swift 1.5, coder = coding version, "
+                         "unsloth = experimental 4-bit, orca = gated Uncensored IQ3_XXS")
     ap.add_argument("--model", choices=list(MODELS))
     ap.add_argument("--context", type=int)
     ap.add_argument("--rope-scaling", choices=["none", "linear", "yarn"],
@@ -2993,7 +3032,7 @@ def main() -> int:
                            "read from the SSD" if ram >= d["ram_gb"] else "does not fit")
                 if hip:                                # #429: not run on AMD yet (its prompt kernels are CUDA-only)
                     verdict += " - NVIDIA only so far, untested on AMD"
-            elif low_ram_needed(m, ram) and low_ram_fits(m, ram, gpu["vram_gb"]) and a.low_ram != "off":
+            elif d.get("low_ram", True) and low_ram_needed(m, ram) and low_ram_fits(m, ram, gpu["vram_gb"]) and a.low_ram != "off":
                 verdict = (f"fits in the low-RAM mode (the GPU holds ~{100 * low_ram_gpu_share(m, gpu['vram_gb']):.0f}% "
                            "of its experts, " + ("the rest stays in RAM)" if low_ram_resident(m, ram, gpu["vram_gb"])
                                                  else "the rest is read from the SSD as needed)"))
@@ -3017,26 +3056,33 @@ def main() -> int:
         say(f"  Its license: {fam['license']}")
     say()
     names = [m for m in MODELS if family in MODELS[m].get("families", ("qwen", "swift"))]
-    if a.model and a.model not in names:
+    requested_model = "ORCA_IQ3_XXS" if family == "orca" and a.model == "IQ3_XXS" else a.model
+    if requested_model and requested_model not in names:
         # #444: say which family has that size, and (with --gguf-dir) which files Strata can run at all
-        elsewhere_fams = [f for f in FAMILIES if f in MODELS[a.model].get("families", ("qwen", "swift"))]
-        fail(f"{fam['title']} has no {a.model} model file", "choose one of: " + ", ".join(names)
+        elsewhere_fams = [f for f in FAMILIES
+                          if requested_model in MODELS
+                          and f in MODELS[requested_model].get("families", ("qwen", "swift"))]
+        public_names = [MODELS[m].get("label", m) for m in names]
+        fail(f"{fam['title']} has no {a.model} model file", "choose one of: " + ", ".join(public_names)
              + (f" (or {a.model}: " + ", ".join(f"--family {f} --model {a.model}" for f in elsewhere_fams) + ")"
                 if elsewhere_fams else "")
              + (f".\n       {SUPPORTED_GGUFS}" if a.gguf_dir else ""))
     for i, m in enumerate(names, 1):
         d = MODELS[m]
+        label = d.get("label", m)
         fit = "" if ram >= d["ram_gb"] else f"   <- needs {d['ram_gb']} GB RAM, you have {ram:.0f}"
         if d.get("budget"):
-            say(f"  {i}) {m} {d['about']}; download {d['download_gb']:.0f} GB, keeps ~"
+            say(f"  {i}) {label} {d['about']}; download {d['download_gb']:.0f} GB, keeps ~"
                 f"{resident_budget_gib(m, ram)} GB of its {d['arena_gb']:.0f} GB of experts in RAM{fit}")
             continue
-        if low_ram_needed(m, ram) and low_ram_fits(m, ram, gpu["vram_gb"]) and a.low_ram != "off":
+        if d.get("low_ram", True) and low_ram_needed(m, ram) and low_ram_fits(m, ram, gpu["vram_gb"]) and a.low_ram != "off":
             fit = (f"   <- fits in the low-RAM mode (the GPU holds ~{100 * low_ram_gpu_share(m, gpu['vram_gb']):.0f}%, "
                    + ("the rest in RAM)" if low_ram_resident(m, ram, gpu["vram_gb"]) else "the rest from the SSD)"))
-        say(f"  {i}) {m:8s} {d['about']}; download {d['download_gb']:.0f} GB, uses ~{d['arena_gb']:.0f} GB of RAM{fit}")
+        say(f"  {i}) {label:8s} {d['about']}; download {d['download_gb']:.0f} GB, uses ~{d['arena_gb']:.0f} GB of RAM{fit}")
     rec = str(names.index("IQ3_XXS") + 1) if ram >= 60 and "IQ3_XXS" in names else "1"
-    model = a.model or names[int(ask("Which size?", [str(i) for i in range(1, len(names) + 1)], rec, a.yes)) - 1]
+    model = requested_model or names[int(ask("Which size?", [str(i) for i in range(1, len(names) + 1)], rec, a.yes)) - 1]
+    model_label = MODELS[model].get("label", model)
+    model_tag = MODELS[model].get("tag", model)
     budget = None
     if MODELS[model].get("budget"):
         # Unsloth's UD-Q4_K_XL: a RAM budget of experts, the rest from the GGUF on the SSD - not the low-RAM mode (no
@@ -3068,19 +3114,32 @@ def main() -> int:
             multi, sel, chosen = [], [gpu["index"]], [gpu]
     elif a.resident_budget_gib is not None:
         warn(f"--resident-budget-gib is for UD-Q4_K_XL: {model} keeps all of its experts in RAM or in the low-RAM mode")
-    low_ram = budget is None and (a.low_ram in ("on", "resident", "mmap") or
-                                  (a.low_ram == "auto" and low_ram_needed(model, ram)))
+    low_ram_allowed = MODELS[model].get("low_ram", True)
+    if not low_ram_allowed and a.low_ram not in ("auto", "off"):
+        warn(f"--low-ram {a.low_ram} is not validated for {fam['title']} {model_label}: ignored")
+    low_ram = low_ram_allowed and budget is None and (a.low_ram in ("on", "resident", "mmap") or
+                                                      (a.low_ram == "auto" and low_ram_needed(model, ram)))
     if low_ram and multi and not low_ram_together(a, model, ram, gpu, chosen):
         multi, sel, chosen = [], [gpu["index"]], [gpu]
     # (the low-RAM mode's variant is decided once the context is known, below; on several GPUs it is the mapped one)
     if not low_ram and budget is None and ram < MODELS[model]["ram_gb"] - 4:
-        confirm_paging(model, ram, a.low_ram, a.yes, bool(a.model))
-    ok(f"size: {model}")
-    tag = fam["tag"] + model                           # names of the pack, config and start script
+        if low_ram_allowed:
+            confirm_paging(model, ram, a.low_ram, a.yes, bool(a.model))
+        else:
+            confirm_risk(f"{fam['title']} {model_label} needs about {MODELS[model]['ram_gb']} GB of RAM for the "
+                         f"validated compatibility path; this PC has {ram:.0f} GB",
+                         bool(a.model), a.yes,
+                         f"{fam['title']} {model_label} needs more RAM",
+                         "use the original Qwen IQ2_XS / Q2_0 path, or add RAM",
+                         "  Install it anyway?")
+    ok(f"size: {model_label}")
+    tag = fam["tag"] + model_tag                       # names of the pack, config and start script
     small = min(x["vram_gb"] for x in chosen)         # each card keeps its layers' KV of the whole context
     rec_ctx = 32768 if small < 14 else 65536 if small < 20 else 131072
     if budget is not None:                             # UD-Q4_K_XL: every GB of KV is a GB fewer of cached experts
         rec_ctx = 8192 if small < 14 else 32768
+    if fam.get("validated_context"):
+        rec_ctx = min(rec_ctx, fam["validated_context"])
     # #406: the RAM rule is part of the recommendation (the smaller of the two), no longer a cap over the user's choice
     rec_ctx = min(rec_ctx, ram_ctx(model, ram, low_ram))
     if a.context:
@@ -3100,6 +3159,9 @@ def main() -> int:
                                str(CONTEXTS.index(rec_ctx) + 1), a.yes)) - 1]
     # #406 #364: a context past the RAM rule (an explicit --context, a pick in the list, or the earlier install's) is
     # kept, with what it risks.  It used to become 128K: users ran 256K fine where setup's estimate said no.
+    if fam.get("validated_context") and ctx > fam["validated_context"]:
+        warn(f"{fam['title']} {model_label} was validated in Strata at {fam['validated_context'] // 1024}K context; "
+             f"{ctx // 1024}K is kept as you chose but has not been validated for this fine-tune")
     need_gb = ctx_ram_need(model, ctx, low_ram)
     if need_gb is not None and ram < need_gb and ctx > 131072:
         warn(f"{ctx // 1024}K with {model} needs ~{need_gb:.0f} GB of RAM by setup's estimate "
@@ -3270,8 +3332,14 @@ def main() -> int:
     ok(f"engine: {eng / EXE}")
 
     # ---- 5. the model files
-    step(5, f"downloading {fam['title']} {model}")
+    step(5, f"downloading {fam['title']} {model_label}")
     if not a.gguf_dir:
+        dl_headers = hf_download_headers(fam)
+        if fam.get("gated") and not dl_headers and any(not (s.exists() and done(s)) for s in shards):
+            fail(f"{fam['title']} is gated on Hugging Face and needs an access token for its first download",
+                 "accept the repository's access conditions at "
+                 "https://huggingface.co/orcarouter/Qwen3.8-Flash-Next-Uncensored-GGUF, then set HF_TOKEN "
+                 "(or HUGGING_FACE_HUB_TOKEN) to a read token and run setup again")
         for s in shards:
             if s.exists() and done(s):
                 ok(f"{s.name} already downloaded")
@@ -3286,7 +3354,7 @@ def main() -> int:
                     continue
                 except OSError:
                     pass
-            download(fam["hf"].format(q=model) + s.name, s)
+            download(fam["hf"].format(q=model) + s.name, s, headers=dl_headers)
     check_shards(shards)
     for s in shards:                                   # the experimental Unsloth file: pinned sizes and SHA-256
         if s.name in fam.get("sha256", {}):
@@ -3355,7 +3423,7 @@ def main() -> int:
     # (a 4-shard file: the engine finds the PLE table's shard itself from shard 1, the measured setup)
     args = ["--pack", str(pack), "--native", str(shards[0]), *(["--ple-gguf", str(ple)] if len(shards) <= 2 else []),
             "--expert-profile", str(ROOT / "data" / fam.get("profile", "expert-profile.bin")), "--expert-cache", "auto",
-            "--prefill", "auto", "--spec", "4", "--spec-min-p", "0.5", "--mtp", str(rt),
+            "--prefill", fam.get("prefill", "auto"), "--spec", "4", "--spec-min-p", "0.5", "--mtp", str(rt),
             "--max-context", str(ctx)]
     if scaling is not None:     # the resolved config: explicit flags as given, or the automatic yarn+factor
         args += ["--rope-scaling", scaling, "--rope-scale", f"{rope_scale:g}"]
@@ -3412,7 +3480,7 @@ def main() -> int:
         args += ["--control-vector-scaled", f"{esp}:1.0", "--control-vector-layer-range", "4", "44",
                  "--cvec-mode", "project", "--cvec-dir", "per-layer"]
     cfg = {"exe": str(eng / EXE), "args": args, "cwd": str(ROOT), "tokenizer": str(pack / "tokenizer"),
-           "model_name": f"{fam['name']}-{model.lower()}", "log": str(ROOT / f"strata-{tag.lower()}.log"),
+           "model_name": f"{fam['name']}-{model_tag.lower()}", "log": str(ROOT / f"strata-{tag.lower()}.log"),
            "lib_dirs": lib_dirs, "port": port}
     if hip:
         cfg["backend"] = "hip"
