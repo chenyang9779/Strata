@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import getpass
 import hashlib
 import json
 import math
@@ -80,16 +81,27 @@ def hf_unpinned(url: str) -> str:
     return re.sub(r"(https://huggingface\.co/.+?/resolve/)[0-9a-f]{40}/", r"\1main/", url, count=1)
 
 
-def hf_access_token() -> str | None:
-    """A Hugging Face token for gated model downloads, without ever storing it in Strata's config."""
-    return os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+def hf_access_token(prompt: bool = False) -> str | None:
+    """A Hugging Face token for gated downloads. Prompt hidden when needed; never persist the token."""
+    token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+    if token or not prompt or not sys.stdin.isatty():
+        return token
+    say()
+    say("  This model's GGUF files require Hugging Face access.")
+    say("  Accept the repository conditions in your browser, then paste a Hugging Face read token below.")
+    say("  The token is hidden while you type and is used only for this download; Strata does not save it.")
+    try:
+        return getpass.getpass("  Hugging Face read token: ").strip() or None
+    except (EOFError, KeyboardInterrupt):
+        say()
+        return None
 
 
-def hf_download_headers(fam: dict) -> dict | None:
-    """Authorization header for a gated Hugging Face family, or None for public files / no token."""
+def hf_download_headers(fam: dict, prompt: bool = False) -> dict | None:
+    """Authorization header for a gated Hugging Face family, optionally asking interactively for the token."""
     if not fam.get("gated"):
         return None
-    token = hf_access_token()
+    token = hf_access_token(prompt=prompt)
     return {"Authorization": f"Bearer {token}"} if token else None
 
 
@@ -3334,12 +3346,13 @@ def main() -> int:
     # ---- 5. the model files
     step(5, f"downloading {fam['title']} {model_label}")
     if not a.gguf_dir:
-        dl_headers = hf_download_headers(fam)
-        if fam.get("gated") and not dl_headers and any(not (s.exists() and done(s)) for s in shards):
-            fail(f"{fam['title']} is gated on Hugging Face and needs an access token for its first download",
-                 "accept the repository's access conditions at "
-                 "https://huggingface.co/orcarouter/Qwen3.8-Flash-Next-Uncensored-GGUF, then set HF_TOKEN "
-                 "(or HUGGING_FACE_HUB_TOKEN) to a read token and run setup again")
+        needs_download = any(not (s.exists() and done(s)) for s in shards)
+        dl_headers = hf_download_headers(fam, prompt=bool(fam.get("gated") and needs_download))
+        if fam.get("gated") and not dl_headers and needs_download:
+            fail(f"{fam['title']} needs Hugging Face access for its first download",
+                 "accept the repository conditions at "
+                 "https://huggingface.co/orcarouter/Qwen3.8-Flash-Next-Uncensored-GGUF, then rerun setup and "
+                 "paste a read token when asked (or set HF_TOKEN / HUGGING_FACE_HUB_TOKEN)")
         for s in shards:
             if s.exists() and done(s):
                 ok(f"{s.name} already downloaded")
