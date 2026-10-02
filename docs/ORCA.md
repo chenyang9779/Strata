@@ -16,6 +16,18 @@ The native loader retains this pack's converted PLE key. Its existing native Q2_
 available to the original model. Hugging Face snapshot symlinks are supported; all split shards must
 finish downloading before packing. Pass the snapshot filename, not its hash-named blob target.
 
+## Installer path in this fork
+
+This fork exposes the validated target directly in setup as `--family orca --model IQ3_XXS`. Setup downloads the
+two IQ3_XXS shards, runs the same `--compat-bf16` conversion described below, keeps this model's tokenizer, uses the
+original Qwen MTP draft runtime, defaults to the validated 32K context and 512-token prefill, and writes the normal
+persistent Strata config/start script.
+
+The Hugging Face repository is gated: accept its access conditions and set `HF_TOKEN` or
+`HUGGING_FACE_HUB_TOKEN` before the first download. Vision and Strata's low-RAM mode are not enabled for this
+installer path because they were not part of the validation. The manual steps below remain useful for debugging or
+for supplying already-downloaded shards.
+
 ## Preparation
 
 Build Strata normally using the pinned llama.cpp dependency. Python needs numpy, regex and gguf-py
@@ -83,7 +95,8 @@ does not establish this fine-tune's speed or accuracy.
 
 - IQ3_XXS is the target of this change; other Orca quantizations are not validated.
 - IQ3_M additionally uses Q5_0 expert down matrices, which the native GPU expert path does not support.
-- The installer model menu is unchanged. This is an explicit local packing workflow.
+- This fork's installer exposes the validated IQ3_XXS target as `--family orca`; other Orca quantizations remain
+  outside the installer and are not validated.
 - Focused conversion and split-file tests: `.venv/bin/python -m unittest discover -s tools -p test_iq_pack.py`.
 - All eight packing tests, 17 server tests and the GPU gated-residual parity check passed.
 - The complete model packed successfully: 460 tensors converted, 1.39 GiB of converted BF16 weights;
