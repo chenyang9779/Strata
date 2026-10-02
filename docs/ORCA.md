@@ -23,9 +23,10 @@ two IQ3_XXS shards, runs the same `--compat-bf16` conversion described below, ke
 original Qwen MTP draft runtime, defaults to the validated 32K context and 512-token prefill, and writes the normal
 persistent Strata config/start script.
 
-The Hugging Face repository is gated: accept its access conditions and set `HF_TOKEN` or
-`HUGGING_FACE_HUB_TOKEN` before the first download. Vision and Strata's low-RAM mode are not enabled for this
-installer path because they were not part of the validation. The manual steps below remain useful for debugging or
+The Hugging Face repository is gated: accept its access conditions before the first download. Interactive setup then
+asks for a Hugging Face read token with hidden input, uses it in memory for the download and does not store it in
+Strata's config or settings. For unattended setup, set `HF_TOKEN` or `HUGGING_FACE_HUB_TOKEN` instead. Vision and
+Strata's low-RAM mode are not enabled for this installer path because they were not part of the validation. The manual steps below remain useful for debugging or
 for supplying already-downloaded shards.
 
 ## Preparation
